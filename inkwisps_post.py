@@ -57,8 +57,8 @@ class DropboxToInstagramUploader:
         self.instagram_access_token = os.getenv("IG_INKWISPS_TOKEN")
         self.instagram_account_id = os.getenv("IG_INKWISPS_ID")
 
-        self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
-        self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
+        self.dropbox_app_key = os.getenv("DROPBOX_INKWISPS_APP_KEY")
+        self.dropbox_app_secret = os.getenv("DROPBOX_INKWISPS_APP_SECRET")
         self.dropbox_access_token = os.getenv("DROPBOX_INKWISPS_TOKEN")
         self.dropbox_refresh_token = os.getenv("DROPBOX_INKWISPS_REFRESH")
         self.dropbox_folder = "/inkwisps"
