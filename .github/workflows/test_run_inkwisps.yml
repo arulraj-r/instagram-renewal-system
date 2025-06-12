@@ -1,19 +1,19 @@
-name: Test INK_WISPS Upload
+name: Test ECLIPSED_BY_YOU Upload
 
 on:
   workflow_dispatch:
 
 jobs:
-  test_INK_WISPS:
+  test_ECLIPSED_BY_YOU:
     runs-on: ubuntu-latest
 
     env:  # Set all required secrets here
-      IG_INK_WISPS_TOKEN: ${{ secrets.IG_INK_WISPS_TOKEN }}
-      IG_INK_WISPS_ID: ${{ secrets.IG_INK_WISPS_ID }}
-      DROPBOX_INK_WISPS_TOKEN: ${{ secrets.DROPBOX_INK_WISPS_TOKEN }}
-      DROPBOX_INK_WISPS_REFRESH: ${{ secrets.DROPBOX_INK_WISPS_REFRESH }}
-      DROPBOX_INK_WISPS_APP_KEY: ${{ secrets.DROPBOX_INK_WISPS_APP_KEY }}
-      DROPBOX_INK_WISPS_APP_SECRET: ${{ secrets.DROPBOX_INK_WISPS_APP_SECRET }}
+      IG_ECLIPSED_BY_YOU_TOKEN: ${{ secrets.IG_ECLIPSED_BY_YOU_TOKEN }}
+      IG_ECLIPSED_BY_YOU_ID: ${{ secrets.IG_ECLIPSED_BY_YOU_ID }}
+      DROPBOX_ECLIPSED_BY_YOU_TOKEN: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_TOKEN }}
+      DROPBOX_ECLIPSED_BY_YOU_REFRESH: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_REFRESH }}
+      DROPBOX_ECLIPSED_BY_YOU_APP_KEY: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_APP_KEY }}
+      DROPBOX_ECLIPSED_BY_YOU_APP_SECRET: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_APP_SECRET }}
       GH_PAT: ${{ secrets.GH_PAT }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -34,5 +34,5 @@ jobs:
           python -m pip install --no-cache-dir requests dropbox python-dotenv pynacl
           python -m pip install --no-cache-dir python-telegram-bot==13.15
 
-      - name: Run ink_wisps_post.py
-        run: python ink_wisps_post.py
+      - name: Run eclipsed_by_you_post.py
+        run: python eclipsed_by_you_post.py
