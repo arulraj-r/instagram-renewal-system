@@ -186,29 +186,49 @@ class DropboxToInstagramUploader:
                 return False
 
             if media_type == "REELS":
-                status_url = f"{self.INSTAGRAM_GRAPH_API_BASE}/{creation_id}?fields=status_code&access_token={access_token}"
-                max_wait, interval, waited = 180, 5, 0
-                while waited < max_wait:
-                    status_resp = requests.get(status_url)
-                    if status_resp.status_code != 200:
-                        self.logger.warning(f"Status check failed (HTTP {status_resp.status_code})")
-                        time.sleep(interval)
-                        waited += interval
-                        continue
+                status_url = f"{self.INSTAGRAM_GRAPH_API_BASE}/{creation_id}?fields=status_code,status&access_token={access_token}"
+                interval = 5  # Check every 5 seconds
+                max_attempts = 12  # Maximum 1 minute of checking
+                attempts = 0
 
-                    status = status_resp.json().get("status_code")
-                    self.logger.info(f"Video processing status: {status}")
-                    if status == "FINISHED":
-                        break
-                    elif status == "ERROR":
-                        error_msg = "Video processing failed."
+                while attempts < max_attempts:
+                    try:
+                        status_resp = requests.get(status_url)
+                        if status_resp.status_code != 200:
+                            error_data = status_resp.json()
+                            error_msg = f"Status check failed (HTTP {status_resp.status_code}): {error_data.get('error', {}).get('message', 'Unknown error')}"
+                            self.logger.warning(error_msg)
+                            time.sleep(interval)
+                            attempts += 1
+                            continue
+
+                        status_data = status_resp.json()
+                        status = status_data.get("status_code")
+                        status_message = status_data.get("status", "No status message")
+                        
+                        self.logger.info(f"Media container status: {status} - {status_message}")
+                        
+                        if status == "FINISHED":
+                            self.logger.info("Media container created successfully")
+                            break
+                        elif status == "ERROR":
+                            error_msg = f"Media container creation failed: {status_message}"
+                            self.logger.error(error_msg)
+                            self.send_telegram_message(f"❌ {error_msg}")
+                            return False
+                        elif status == "IN_PROGRESS":
+                            self.logger.info(f"Creating media container... (attempt {attempts + 1}/{max_attempts})")
+                            
+                        time.sleep(interval)
+                        attempts += 1
+                    except Exception as e:
+                        error_msg = f"Error checking media container status: {str(e)}"
                         self.logger.error(error_msg)
-                        self.send_telegram_message(f"❌ {error_msg}")
-                        return False
-                    time.sleep(interval)
-                    waited += interval
+                        time.sleep(interval)
+                        attempts += 1
+                        continue
                 else:
-                    error_msg = "Video processing timed out."
+                    error_msg = "Media container creation timed out after 1 minute"
                     self.logger.error(error_msg)
                     self.send_telegram_message(f"❌ {error_msg}")
                     return False
