@@ -1,10 +1,10 @@
 name: Test Inkwisps Upload
 
 on:
-  workflow_dispatch:  # allows manual run from GitHub
+  workflow_dispatch:
 
 jobs:
-  test_inkwisps_run:
+  post_inkwisps:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -17,7 +17,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests dropbox pyTelegramBotAPI python-dotenv pynacl
+          pip install requests dropbox python-dotenv pyTelegramBotAPI pynacl
 
       - name: Run inkwisps_post.py
+        env:
+          IG_INKWISPS_TOKEN: ${{ secrets.IG_INKWISPS_TOKEN }}
+          IG_INKWISPS_ID: ${{ secrets.IG_INKWISPS_ID }}
+          DROPBOX_INKWISPS_TOKEN: ${{ secrets.DROPBOX_INKWISPS_TOKEN }}
+          DROPBOX_INKWISPS_REFRESH: ${{ secrets.DROPBOX_INKWISPS_REFRESH }}
+          DROPBOX_INKWISPS_APP_KEY: ${{ secrets.DROPBOX_INKWISPS_APP_KEY }}
+          DROPBOX_INKWISPS_APP_SECRET: ${{ secrets.DROPBOX_INKWISPS_APP_SECRET }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: python inkwisps_post.py
