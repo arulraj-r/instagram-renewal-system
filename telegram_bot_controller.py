@@ -116,7 +116,10 @@ def require_auth(func):
     def wrapper(update: Update, context: CallbackContext, *args, **kwargs):
         user_id = update.effective_user.id
         if not is_authorized(user_id):
-            update.message.reply_text("🔐 Please /start and login first.")
+            if update.callback_query:
+                update.callback_query.message.reply_text("🔐 Please /start and login first.")
+            else:
+                update.message.reply_text("🔐 Please /start and login first.")
             return
         return func(update, context, *args, **kwargs)
     return wrapper
@@ -125,8 +128,29 @@ def require_auth(func):
 def get_dropbox_client(account):
     token = os.getenv(f"DROPBOX_{account.upper()}_TOKEN")
     if not token:
+        logger.error(f"Dropbox token not found for {account}")
         return None
     return dropbox.Dropbox(token)
+
+def count_files_in_folder(dbx, folder_path):
+    try:
+        count = 0
+        result = dbx.files_list_folder(folder_path, recursive=True)
+        
+        while True:
+            for entry in result.entries:
+                if isinstance(entry, dropbox.files.FileMetadata):
+                    count += 1
+            
+            if not result.has_more:
+                break
+                
+            result = dbx.files_list_folder_continue(result.cursor)
+            
+        return count
+    except Exception as e:
+        logger.error(f"Error counting files in {folder_path}: {str(e)}")
+        return 0
 
 def get_remaining_files(account):
     try:
@@ -134,10 +158,14 @@ def get_remaining_files(account):
         if not dbx:
             return 0
         
-        result = dbx.files_list_folder(f"/{account}")
-        return len(result.entries)
+        # Count files in the main account folder
+        main_folder = f"/{account}"
+        count = count_files_in_folder(dbx, main_folder)
+        
+        logger.info(f"Found {count} files in {main_folder}")
+        return count
     except Exception as e:
-        logger.error(f"Dropbox error for {account}: {e}")
+        logger.error(f"Dropbox error for {account}: {str(e)}")
         return 0
 
 def check_low_files(account, context):
@@ -194,16 +222,35 @@ def handle_password(update: Update, context: CallbackContext):
     if USER_STATE.get(user_id) != "awaiting_password":
         return
 
+    # Get password from environment variable
     password = os.getenv(GITHUB_SECRET_NAME)
+    logger.info(f"Checking password for user {user_id}")
+    
     if not password:
-        update.message.reply_text("❌ Password not set in GitHub Secrets.")
+        logger.error("TELEGRAM_BOT_PASSWORD not set in environment variables")
+        update.message.reply_text(
+            "❌ Bot configuration error: Password not set.\n"
+            "Please contact the administrator."
+        )
         return
 
     if text == password:
         AUTHORIZED_USERS[str(user_id)] = True
         del USER_STATE[user_id]
+        logger.info(f"User {user_id} successfully authenticated")
+        
+        # Show initial status after login
+        accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
+        status_text = "📊 Initial Status:\n\n"
+        
+        for account in accounts:
+            files = get_remaining_files(account)
+            status_text += f"{account}: {files} files in Dropbox\n"
+        
+        update.message.reply_text(status_text)
         show_accounts(update, context)
     else:
+        logger.warning(f"Failed login attempt for user {user_id}")
         update.message.reply_text("❌ Incorrect password. Access denied.")
         ban_user(user_id)
 
@@ -515,8 +562,9 @@ def handle_status(update: Update, context: CallbackContext):
     paused = load_json(PAUSED_PATH)
     results = load_json(RESULTS_PATH)
 
-    # Get Dropbox file count
+    # Get Dropbox file count with detailed logging
     remaining_files = get_remaining_files(account)
+    logger.info(f"Status check for {account}: {remaining_files} files found")
     
     # Get next scheduled post time
     now = datetime.now()
@@ -559,7 +607,7 @@ def handle_status(update: Update, context: CallbackContext):
     for day, times in schedule.items():
         status += f"{day}: {', '.join(times)}\n"
 
-    update.callback_query.message.reply_text(status, parse_mode='Markdown')
+    update.callback_query.message.edit_text(status, parse_mode='Markdown')
 
 # ----------- TIME SLOT HELPERS ----------- #
 def generate_time_slots():
