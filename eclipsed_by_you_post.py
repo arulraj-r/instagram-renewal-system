@@ -1,4 +1,3 @@
-
 import os
 import time
 import json
@@ -7,6 +6,7 @@ import requests
 import dropbox
 from telegram import Bot
 from datetime import datetime
+from nacl import encoding, public
 
 class DropboxToInstagramUploader:
     DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token"
@@ -23,7 +23,7 @@ class DropboxToInstagramUploader:
         )
         self.logger = logging.getLogger()
 
-        # Secrets from environment
+        # Secrets
         self.instagram_access_token = os.getenv("IG_ECLIPSED_BY_YOU_TOKEN")
         self.instagram_account_id = os.getenv("IG_ECLIPSED_BY_YOU_ID")
         self.dropbox_app_key = os.getenv("DROPBOX_ECLIPSED_BY_YOU_APP_KEY")
@@ -41,7 +41,7 @@ class DropboxToInstagramUploader:
         self.dbx = dropbox.Dropbox(oauth2_access_token=self.dropbox_access_token)
 
     def send_message(self, msg):
-        prefix = f"[{self.script_name}]\n"
+        prefix = f"[eclipsed_by_you_post.py]\n"
         try:
             self.telegram_bot.send_message(chat_id=self.telegram_chat_id, text=prefix + msg)
         except Exception as e:
@@ -73,7 +73,7 @@ class DropboxToInstagramUploader:
             }
             pubkey_resp = requests.get(f"https://api.github.com/repos/{self.repo}/actions/secrets/public-key", headers=headers)
             key_data = pubkey_resp.json()
-            from nacl import encoding, public
+
             pubkey = public.PublicKey(key_data["key"].encode(), encoding.Base64Encoder())
             sealed = public.SealedBox(pubkey).encrypt(secret_value.encode())
             encrypted = encoding.Base64Encoder().encode(sealed).decode()
@@ -93,6 +93,19 @@ class DropboxToInstagramUploader:
         valid_exts = ('.mp4', '.mov', '.jpg', '.jpeg', '.png')
         return [f for f in files if f.name.lower().endswith(valid_exts)]
 
+    def is_scheduled_time(self):
+        try:
+            with open("scheduler/config.json", "r") as f:
+                schedule = json.load(f)
+            today = datetime.utcnow().strftime("%A")
+            now = datetime.utcnow().strftime("%H:%M")
+
+            allowed_times = schedule.get("eclipsed_by_you", {}).get(today, [])
+            return now in allowed_times
+        except Exception as e:
+            self.logger.error(f"Schedule check failed: {e}")
+            return True  # fallback: always run if schedule fails
+
     def post_to_instagram(self, file):
         name = file.name
         ext = name.lower()
@@ -102,9 +115,9 @@ class DropboxToInstagramUploader:
         file_size = f"{file.size / 1024 / 1024:.2f}MB"
         files_remaining = len(self.list_dropbox_files())
 
-        self.send_message(f"🚀 Uploading: {name}\n📂 Type: {media_type}\n📐 Size: {file_size}\n📄 Path: {file.path_lower}\n📦 Remaining: {files_remaining}")
+        self.send_message(f"🚀 Uploading: {name}\n📂 Type: {media_type}\n📐 Size: {file_size}\n📦 Remaining: {files_remaining}")
 
-        caption = "#🎵 #🎶 #🎼 \n #eclipsed_by_you ✨"
+        caption = "#ECLIPSED_BY_YOU ✨\n#quotes #poetry #aesthetic"
 
         url = f"{self.INSTAGRAM_API_BASE}/{self.instagram_account_id}/media"
         data = {
@@ -148,13 +161,19 @@ class DropboxToInstagramUploader:
             return False
 
     def run(self):
+        if not self.is_scheduled_time():
+            self.logger.info("⏰ Not in schedule, skipping.")
+            return
+
         files = self.list_dropbox_files()
+        if not files:
+            self.send_message("📭 No eligible files found.")
+            return
+
         for file in files:
             success = self.post_to_instagram(file)
             if success:
-                break  # Post only one file
-        else:
-            self.send_message("📭 No eligible files found.")
+                break  # post only one file
 
 if __name__ == "__main__":
-    DropboxToInstagramUploader().run() 
+    DropboxToInstagramUploader().run()
