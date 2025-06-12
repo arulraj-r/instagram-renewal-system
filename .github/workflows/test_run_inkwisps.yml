@@ -1,0 +1,23 @@
+name: Test Inkwisps Upload
+
+on:
+  workflow_dispatch:  # allows manual run from GitHub
+
+jobs:
+  test_inkwisps_run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install requests dropbox pyTelegramBotAPI python-dotenv pynacl
+
+      - name: Run inkwisps_post.py
+        run: python inkwisps_post.py
