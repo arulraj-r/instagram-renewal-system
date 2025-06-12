@@ -1,0 +1,36 @@
+name: Instagram Scheduler - ECLIPSED_BY_YOU
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"  # Every 15 minutes
+  workflow_dispatch:
+
+jobs:
+  post_ECLIPSED_BY_YOU:
+    runs-on: ubuntu-latest
+    env:
+      IG_ECLIPSED_BY_YOU_TOKEN: ${{ secrets.IG_ECLIPSED_BY_YOU_TOKEN }}
+      IG_ECLIPSED_BY_YOU_ID: ${{ secrets.IG_ECLIPSED_BY_YOU_ID }}
+      DROPBOX_ECLIPSED_BY_YOU_REFRESH: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_REFRESH }}
+      DROPBOX_ECLIPSED_BY_YOU_APP_KEY: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_APP_KEY }}
+      DROPBOX_ECLIPSED_BY_YOU_APP_SECRET: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_APP_SECRET }}
+      GH_PAT: ${{ secrets.GH_PAT }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install dropbox requests python-telegram-bot==13.15 pynacl
+
+      - name: Run ECLIPSED_BY_YOU Posting Script
+        run: python eclipsed_by_you_post.py
