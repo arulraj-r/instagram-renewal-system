@@ -30,7 +30,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests dropbox python-dotenv pyTelegramBotAPI pynacl
+          python -m pip install --upgrade pip
+          pip install requests dropbox python-dotenv python-telegram-bot pynacl
 
       - name: Run inkwisps_post.py
         run: python inkwisps_post.py
