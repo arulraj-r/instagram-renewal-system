@@ -6,6 +6,7 @@ import json
 import logging
 import requests
 import dropbox
+import base64
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -22,11 +23,103 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ----------- FILE PATHS ----------- #
-CONFIG_PATH = "scheduler/config.json"
-CAPTIONS_PATH = "scheduler/captions.json"
-PAUSED_PATH = "scheduler/paused.json"
-EXPIRY_PATH = "scheduler/token_expiry.json"
-RESULTS_PATH = "scheduler/post_results.json"
+SCHEDULER_DIR = "scheduler"
+CONFIG_PATH = os.path.join(SCHEDULER_DIR, "config.json")
+CAPTIONS_PATH = os.path.join(SCHEDULER_DIR, "captions.json")
+PAUSED_PATH = os.path.join(SCHEDULER_DIR, "paused.json")
+EXPIRY_PATH = os.path.join(SCHEDULER_DIR, "token_expiry.json")
+RESULTS_PATH = os.path.join(SCHEDULER_DIR, "post_results.json")
+BANNED_PATH = os.path.join(SCHEDULER_DIR, "banned.json")
+
+# ----------- SECURITY SETTINGS ----------- #
+GITHUB_SECRET_NAME = "TELEGRAM_BOT_PASSWORD"
+AUTHORIZED_USERS = {}
+USER_STATE = {}
+
+# ----------- FILE UTILITIES ----------- #
+def ensure_file(file_path, default):
+    if not os.path.exists(file_path):
+        with open(file_path, 'w') as f:
+            json.dump(default, f, indent=2)
+
+def load_json(path):
+    ensure_file(path, {})
+    with open(path, 'r') as f:
+        return json.load(f)
+
+def save_json(path, data):
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+    push_scheduler_file_to_github(os.path.basename(path))
+
+# ----------- SYNC TO GITHUB ----------- #
+def push_scheduler_file_to_github(file_name):
+    try:
+        github_token = os.getenv("GH_PAT")
+        repo = os.getenv("GITHUB_REPOSITORY")
+        file_path = f"{SCHEDULER_DIR}/{file_name}"
+        url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+        
+        headers = {
+            "Authorization": f"token {github_token}",
+            "Accept": "application/vnd.github+json"
+        }
+
+        with open(file_path, "rb") as f:
+            content = base64.b64encode(f.read()).decode("utf-8")
+
+        sha = get_existing_file_sha(url, headers)
+        data = {
+            "message": f"Update {file_path} via Telegram bot",
+            "content": content,
+            "branch": "main"
+        }
+        if sha:
+            data["sha"] = sha
+
+        res = requests.put(url, headers=headers, json=data)
+        if res.status_code in [200, 201]:
+            logger.info(f"Successfully pushed {file_name} to GitHub")
+            return True
+        else:
+            logger.error(f"GitHub push failed for {file_name}: {res.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Error pushing to GitHub: {str(e)}")
+        return False
+
+def get_existing_file_sha(url, headers):
+    try:
+        res = requests.get(url, headers=headers)
+        if res.status_code == 200:
+            return res.json().get("sha")
+        return None
+    except Exception as e:
+        logger.error(f"Error getting file SHA: {str(e)}")
+        return None
+
+# ----------- SECURITY HELPERS ----------- #
+def is_banned(user_id):
+    banned = load_json(BANNED_PATH)
+    return str(user_id) in banned
+
+def ban_user(user_id):
+    banned = load_json(BANNED_PATH)
+    if str(user_id) not in banned:
+        banned.append(str(user_id))
+        save_json(BANNED_PATH, banned)
+
+def is_authorized(user_id):
+    return str(user_id) in AUTHORIZED_USERS
+
+def require_auth(func):
+    def wrapper(update: Update, context: CallbackContext, *args, **kwargs):
+        user_id = update.effective_user.id
+        if not is_authorized(user_id):
+            update.message.reply_text("🔐 Please /start and login first.")
+            return
+        return func(update, context, *args, **kwargs)
+    return wrapper
 
 # ----------- DROPBOX HELPERS ----------- #
 def get_dropbox_client(account):
@@ -84,71 +177,159 @@ def save_post_result(account, filename, success, error=None):
     }
     save_json(RESULTS_PATH, results)
 
-# ----------- HELPERS ----------- #
-def ensure_file(file_path, default):
-    if not os.path.exists(file_path):
-        with open(file_path, 'w') as f:
-            json.dump(default, f, indent=2)
-
-def load_json(path):
-    ensure_file(path, {})
-    with open(path, 'r') as f:
-        return json.load(f)
-
-def save_json(path, data):
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-
-def update_github_secret(secret_name, secret_value):
-    try:
-        github_token = os.getenv("GH_PAT")
-        repo = os.getenv("GITHUB_REPOSITORY")
-        headers = {
-            "Authorization": f"token {github_token}",
-            "Accept": "application/vnd.github+json"
-        }
-        key_url = f"https://api.github.com/repos/{repo}/actions/secrets/public-key"
-        key_resp = requests.get(key_url, headers=headers).json()
-
-        public_key = public.PublicKey(key_resp["key"].encode("utf-8"), encoding.Base64Encoder())
-        sealed_box = public.SealedBox(public_key)
-        encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
-        encrypted_value = encoding.Base64Encoder().encode(encrypted).decode("utf-8")
-
-        update_url = f"https://api.github.com/repos/{repo}/actions/secrets/{secret_name}"
-        payload = {
-            "encrypted_value": encrypted_value,
-            "key_id": key_resp["key_id"]
-        }
-        r = requests.put(update_url, headers=headers, json=payload)
-        return r.status_code in [201, 204]
-    except Exception as e:
-        logger.error(f"GitHub secret update error: {e}")
-        return False
-
-# ----------- TELEGRAM BOT STATE ----------- #
-USER_STATE = {}
-
 # ----------- TELEGRAM HANDLERS ----------- #
 def start(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    if is_banned(user_id):
+        update.message.reply_text("🚫 Access denied.")
+        return
+
+    USER_STATE[user_id] = "awaiting_password"
+    update.message.reply_text("🔐 Enter password to access bot:")
+
+def handle_password(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    if USER_STATE.get(user_id) != "awaiting_password":
+        return
+
+    password = os.getenv(GITHUB_SECRET_NAME)
+    if not password:
+        update.message.reply_text("❌ Password not set in GitHub Secrets.")
+        return
+
+    if text == password:
+        AUTHORIZED_USERS[str(user_id)] = True
+        del USER_STATE[user_id]
+        show_accounts(update, context)
+    else:
+        update.message.reply_text("❌ Incorrect password. Access denied.")
+        ban_user(user_id)
+
+@require_auth
+def show_accounts(update: Update, context: CallbackContext):
     accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
     buttons = [[InlineKeyboardButton(acc, callback_data=f"account:{acc}")] for acc in accounts]
     reply_markup = InlineKeyboardMarkup(buttons)
-    update.message.reply_text("Choose an account:", reply_markup=reply_markup)
+    
+    if update.callback_query:
+        update.callback_query.message.edit_text("Choose an account:", reply_markup=reply_markup)
+    else:
+        update.message.reply_text("Choose an account:", reply_markup=reply_markup)
+
+def handle_back_to_accounts(update: Update, context: CallbackContext):
+    query = update.callback_query
+    accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
+    buttons = [[InlineKeyboardButton(acc, callback_data=f"account:{acc}")] for acc in accounts]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    query.message.edit_text("Choose an account:", reply_markup=reply_markup)
 
 def handle_account_selection(update: Update, context: CallbackContext):
     query = update.callback_query
     account = query.data.split(":")[1]
     context.user_data['account'] = account
+    
+    # Check token expiry on account selection
+    check_token_expiry(account, context)
+    
     buttons = [
         [InlineKeyboardButton("📆 Schedule Posts", callback_data="schedule")],
-        [InlineKeyboardButton("🔑 Update API Key", callback_data="update_token")],
+        [InlineKeyboardButton("📋 View Schedule", callback_data="view_schedule")],
         [InlineKeyboardButton("✏️ Set Static Caption", callback_data="caption")],
+        [InlineKeyboardButton("🔑 Update API Key", callback_data="update_token")],
         [InlineKeyboardButton("⏸️ Pause/Resume", callback_data="pause")],
         [InlineKeyboardButton("📊 Status Summary", callback_data="status")],
-        [InlineKeyboardButton("♻ Reset Schedule", callback_data="reset")]
+        [InlineKeyboardButton("📤 Post Logs", callback_data="post_logs")],
+        [InlineKeyboardButton("♻ Reset Schedule", callback_data="reset")],
+        [InlineKeyboardButton("🔙 Back to Accounts", callback_data="back_to_accounts")]
     ]
-    query.message.reply_text(f"Manage: {account}", reply_markup=InlineKeyboardMarkup(buttons))
+    query.message.edit_text(f"Manage: {account}", reply_markup=InlineKeyboardMarkup(buttons))
+
+def handle_view_schedule(update: Update, context: CallbackContext):
+    query = update.callback_query
+    account = context.user_data['account']
+    cfg = load_json(CONFIG_PATH)
+    
+    # Create buttons for each day
+    buttons = []
+    for day in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]:
+        times = cfg.get(account, {}).get(day, [])
+        if times:
+            label = f"{day}: {', '.join(times)}"
+        else:
+            label = f"{day}: No posts"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"view_day:{day}")])
+    
+    # Add back button
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")])
+    
+    schedule_text = f"📅 Schedule for {account}\n\n"
+    for day, times in cfg.get(account, {}).items():
+        if times:
+            schedule_text += f"{day}: {', '.join(times)}\n"
+    
+    query.message.edit_text(schedule_text, reply_markup=InlineKeyboardMarkup(buttons))
+
+def handle_view_day(update: Update, context: CallbackContext):
+    query = update.callback_query
+    day = query.data.split(":")[1]
+    account = context.user_data['account']
+    cfg = load_json(CONFIG_PATH)
+    
+    times = cfg.get(account, {}).get(day, [])
+    if times:
+        text = f"📅 {day} Schedule for {account}:\n{', '.join(times)}"
+    else:
+        text = f"📅 No posts scheduled for {day}"
+    
+    buttons = [[InlineKeyboardButton("🔙 Back to Schedule", callback_data="view_schedule")]]
+    query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+def handle_post_logs(update: Update, context: CallbackContext):
+    query = update.callback_query
+    account = context.user_data['account']
+    results = load_json(RESULTS_PATH)
+    
+    if account not in results:
+        text = f"📤 No post logs available for {account}"
+    else:
+        last_post = results[account]
+        text = f"📤 Last Post for {account}:\n"
+        text += f"Time: {last_post['last_post']}\n"
+        text += f"File: {last_post['filename']}\n"
+        text += f"Status: {'✅ Success' if last_post['success'] else '❌ Failed'}\n"
+        if not last_post['success'] and last_post.get('error'):
+            text += f"Error: {last_post['error']}\n"
+    
+    buttons = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]]
+    query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+def handle_reset(update: Update, context: CallbackContext):
+    query = update.callback_query
+    account = context.user_data['account']
+    
+    buttons = [
+        [InlineKeyboardButton("✅ Yes, Reset Schedule", callback_data="confirm_reset")],
+        [InlineKeyboardButton("❌ No, Cancel", callback_data="back_to_menu")]
+    ]
+    query.message.edit_text(
+        f"⚠️ Are you sure you want to reset the schedule for {account}?",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+def handle_confirm_reset(update: Update, context: CallbackContext):
+    query = update.callback_query
+    account = context.user_data['account']
+    cfg = load_json(CONFIG_PATH)
+    cfg[account] = {}
+    save_json(CONFIG_PATH, cfg)
+    
+    buttons = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]]
+    query.message.edit_text(
+        f"✅ Schedule for {account} has been reset.",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 def handle_schedule(update: Update, context: CallbackContext):
     weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -235,12 +416,23 @@ def handle_message(update: Update, context: CallbackContext):
 
     elif context.user_data.get('next_action') == 'update_token':
         secret_name = context.user_data.get('secret_target')
+        token_type = context.user_data.get('token_type')
+        
+        # Log the attempt
+        logger.info(f"Attempting to update {token_type} token for {account}")
+        
         success = update_github_secret(secret_name, text)
         if success:
-            update.message.reply_text("✅ Token updated. Now enter expiry date (YYYY-MM-DD):")
+            update.message.reply_text(
+                f"✅ {token_type} token updated successfully.\n"
+                "Now enter expiry date (YYYY-MM-DD):"
+            )
             context.user_data['next_action'] = 'token_expiry'
         else:
-            update.message.reply_text("❌ Failed to update token.")
+            update.message.reply_text(
+                f"❌ Failed to update {token_type} token.\n"
+                "Please check the logs and try again."
+            )
             context.user_data.clear()
 
     elif context.user_data.get('next_action') == 'token_expiry':
@@ -251,7 +443,10 @@ def handle_message(update: Update, context: CallbackContext):
                 return
                 
             update_token_expiry(account, text)
-            update.message.reply_text("✅ Token expiry date saved.")
+            update.message.reply_text(
+                "✅ Token expiry date saved.\n"
+                f"Token will expire on {text}"
+            )
             context.user_data.clear()
         except ValueError:
             update.message.reply_text("❌ Invalid date format. Use YYYY-MM-DD (e.g. 2024-12-31)")
@@ -270,13 +465,39 @@ def handle_update_token(update: Update, context: CallbackContext):
 def handle_token_choice(update: Update, context: CallbackContext):
     token_type = update.callback_query.data.split(":")[1]
     account = context.user_data.get('account')
+    
     if token_type == "IG":
         secret_name = f"IG_{account.upper()}_TOKEN"
+        token_type_display = "Instagram"
     else:
         secret_name = f"DROPBOX_{account.upper()}_TOKEN"
+        token_type_display = "Dropbox"
+    
     context.user_data['secret_target'] = secret_name
+    context.user_data['token_type'] = token_type_display
     context.user_data['next_action'] = 'update_token'
-    update.callback_query.message.reply_text(f"Send new value for {secret_name}:")
+    
+    buttons = [
+        [InlineKeyboardButton("✅ Continue", callback_data="token:continue")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="back_to_menu")]
+    ]
+    
+    update.callback_query.message.edit_text(
+        f"⚠️ You are about to update the {token_type_display} token for {account}.\n\n"
+        f"This will update the GitHub secret: {secret_name}\n\n"
+        "Do you want to continue?",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+def handle_token_continue(update: Update, context: CallbackContext):
+    query = update.callback_query
+    secret_name = context.user_data.get('secret_target')
+    token_type = context.user_data.get('token_type')
+    
+    query.message.edit_text(
+        f"Please send the new {token_type} token value.\n\n"
+        f"⚠️ This will update: {secret_name}"
+    )
 
 def handle_pause(update: Update, context: CallbackContext):
     account = context.user_data['account']
@@ -340,13 +561,6 @@ def handle_status(update: Update, context: CallbackContext):
 
     update.callback_query.message.reply_text(status, parse_mode='Markdown')
 
-def handle_reset(update: Update, context: CallbackContext):
-    account = context.user_data['account']
-    cfg = load_json(CONFIG_PATH)
-    cfg[account] = {}
-    save_json(CONFIG_PATH, cfg)
-    update.callback_query.message.reply_text(f"♻ Schedule for {account} cleared.")
-
 # ----------- TIME SLOT HELPERS ----------- #
 def generate_time_slots():
     slots = []
@@ -396,6 +610,9 @@ def main():
         print("❌ TELEGRAM_BOT_TOKEN not set")
         return
 
+    # Ensure scheduler directory exists
+    os.makedirs(SCHEDULER_DIR, exist_ok=True)
+
     updater = Updater(token)
     dp = updater.dispatcher
 
@@ -403,7 +620,11 @@ def main():
     job_queue = updater.job_queue
     job_queue.run_repeating(periodic_checks, interval=21600, first=10)
 
+    # Basic handlers
     dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_password))
+
+    # Protected handlers
     dp.add_handler(CallbackQueryHandler(handle_account_selection, pattern="^account:"))
     dp.add_handler(CallbackQueryHandler(handle_schedule, pattern="^schedule$"))
     dp.add_handler(CallbackQueryHandler(handle_weekday, pattern="^weekday:"))
@@ -414,6 +635,17 @@ def main():
     dp.add_handler(CallbackQueryHandler(handle_status, pattern="^status$"))
     dp.add_handler(CallbackQueryHandler(handle_reset, pattern="^reset$"))
     dp.add_handler(CallbackQueryHandler(handle_token_choice, pattern="^token:"))
+    dp.add_handler(CallbackQueryHandler(handle_token_continue, pattern="^token:continue$"))
+    dp.add_handler(CallbackQueryHandler(handle_message, pattern="^message:"))
+    
+    # Navigation handlers
+    dp.add_handler(CallbackQueryHandler(handle_back_to_accounts, pattern="^back_to_accounts$"))
+    dp.add_handler(CallbackQueryHandler(handle_view_schedule, pattern="^view_schedule$"))
+    dp.add_handler(CallbackQueryHandler(handle_view_day, pattern="^view_day:"))
+    dp.add_handler(CallbackQueryHandler(handle_post_logs, pattern="^post_logs$"))
+    dp.add_handler(CallbackQueryHandler(handle_confirm_reset, pattern="^confirm_reset$"))
+    dp.add_handler(CallbackQueryHandler(handle_account_selection, pattern="^back_to_menu$"))
+    
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
     updater.start_polling()
