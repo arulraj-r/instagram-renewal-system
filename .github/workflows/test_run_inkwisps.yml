@@ -34,5 +34,5 @@ jobs:
           python -m pip install --no-cache-dir requests dropbox python-dotenv pynacl
           python -m pip install --no-cache-dir python-telegram-bot==13.15
 
-      - name: Run INK_WISPS_post.py
-        run: python INK_WISPS_post.py
+      - name: Run ink_wisps_post.py
+        run: python ink_wisps_post.py
