@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # telegram_bot_controller.py
 
 import os
