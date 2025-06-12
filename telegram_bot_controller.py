@@ -169,11 +169,15 @@ def get_remaining_files(account):
         return 0
 
 def check_low_files(account, context):
-    count = get_remaining_files(account)
-    if count < 5:
-        message = f"⚠️ Only {count} files remaining in /{account} Dropbox folder"
-        context.bot.send_message(chat_id=os.getenv("TELEGRAM_CHAT_ID"), text=message)
-    return count
+    try:
+        count = get_remaining_files(account)
+        if count < 5:
+            message = f"⚠️ Only {count} files remaining in /{account} Dropbox folder"
+            context.bot.send_message(chat_id=os.getenv("TELEGRAM_CHAT_ID"), text=message)
+        return count
+    except Exception as e:
+        logger.error(f"Error checking low files for {account}: {str(e)}")
+        return 0
 
 # ----------- TOKEN EXPIRY HELPERS ----------- #
 def update_token_expiry(account, expiry_date):
@@ -237,20 +241,23 @@ def handle_password(update: Update, context: CallbackContext):
     if text == password:
         AUTHORIZED_USERS[str(user_id)] = True
         del USER_STATE[user_id]
-        logger.info(f"User {user_id} successfully authenticated")
-        
-        # Show initial status after login
+        logger.info(f"User {user_id} authenticated")
+
         accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
         status_text = "📊 Initial Status:\n\n"
-        
+
         for account in accounts:
-            files = get_remaining_files(account)
-            status_text += f"{account}: {files} files in Dropbox\n"
-        
+            try:
+                files = get_remaining_files(account)
+                status_text += f"{account}: {files} files in Dropbox\n"
+            except Exception as e:
+                logger.error(f"Error for {account}: {e}")
+                status_text += f"{account}: error checking files\n"
+
         update.message.reply_text(status_text)
         show_accounts(update, context)
     else:
-        logger.warning(f"Failed login attempt for user {user_id}")
+        logger.warning(f"Failed login for {user_id}")
         update.message.reply_text("❌ Incorrect password. Access denied.")
         ban_user(user_id)
 
@@ -648,8 +655,10 @@ def create_time_button_grid(selected_times, max_slots):
 def periodic_checks(context: CallbackContext):
     accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
     for account in accounts:
-        check_low_files(account, context)
-        check_token_expiry(account, context)
+        try:
+            check_token_expiry(account, context)
+        except Exception as e:
+            logger.error(f"Error during periodic check for {account}: {e}")
 
 # ----------- MAIN ----------- #
 def main():
