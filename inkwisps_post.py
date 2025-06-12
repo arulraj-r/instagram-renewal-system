@@ -25,7 +25,7 @@ def send_telegram_message(message):
 def update_github_secret(secret_name, secret_value):
     try:
         github_token = os.getenv("GH_PAT")
-        repo = os.getenv("GITHUB_REPOSITORY")  # GitHub sets this automatically in Actions
+        repo = os.getenv("GITHUB_REPOSITORY")  # Auto-set by GitHub Actions
         headers = {
             "Authorization": f"token {github_token}",
             "Accept": "application/vnd.github+json"
@@ -81,26 +81,31 @@ class DropboxToInstagramUploader:
         self.dbx = dropbox.Dropbox(oauth2_access_token=self.dropbox_access_token)
 
     def refresh_dropbox_token(self):
+        # Debug logs to verify secrets are loaded
+        self.logger.info(f"🔍 DEBUG: DROPBOX_INKWISPS_REFRESH = {bool(self.dropbox_refresh_token)}")
+        self.logger.info(f"🔍 DEBUG: DROPBOX_INKWISPS_APP_KEY = {bool(self.dropbox_app_key)}")
+        self.logger.info(f"🔍 DEBUG: DROPBOX_INKWISPS_APP_SECRET = {bool(self.dropbox_app_secret)}")
+
         data = {
             "grant_type": "refresh_token",
             "refresh_token": self.dropbox_refresh_token,
             "client_id": self.dropbox_app_key,
             "client_secret": self.dropbox_app_secret,
         }
+
         r = requests.post(self.DROPBOX_TOKEN_URL, data=data)
         if r.status_code == 200:
             new_token = r.json().get("access_token")
             self.dropbox_access_token = new_token
-            self.logger.info("Dropbox token refreshed.")
+            self.logger.info("✅ Dropbox token refreshed.")
 
-            # Update GitHub secret
             updated = update_github_secret("DROPBOX_INKWISPS_TOKEN", new_token)
             if updated:
-                self.logger.info("GitHub secret updated successfully.")
+                self.logger.info("✅ GitHub secret updated successfully.")
             else:
-                self.logger.error("Failed to update GitHub secret.")
+                self.logger.error("❌ Failed to update GitHub secret.")
         else:
-            self.logger.error(f"Dropbox token refresh failed: {r.text}")
+            self.logger.error(f"❌ Dropbox token refresh failed: {r.text}")
 
     def load_upload_history(self):
         if os.path.exists(self.history_file):
