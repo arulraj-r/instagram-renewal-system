@@ -98,6 +98,39 @@ def get_existing_file_sha(url, headers):
         logger.error(f"Error getting file SHA: {str(e)}")
         return None
 
+# ----------- SECURITY HELPERS ----------- #
+def is_banned(user_id):
+    banned = load_json(BANNED_PATH)
+    return str(user_id) in banned
+
+def ban_user(user_id):
+    banned = load_json(BANNED_PATH)
+    if str(user_id) not in banned:
+        banned.append(str(user_id))
+        save_json(BANNED_PATH, banned)
+
+def is_authorized(user_id):
+    return str(user_id) in AUTHORIZED_USERS
+
+def require_auth(func):
+    def wrapper(update: Update, context: CallbackContext, *args, **kwargs):
+        try:
+            user_id = update.effective_user.id
+            if not is_authorized(user_id):
+                if update.callback_query:
+                    update.callback_query.message.reply_text("🔐 Please /start and login first.")
+                else:
+                    update.message.reply_text("🔐 Please /start and login first.")
+                return
+            return func(update, context, *args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in require_auth wrapper: {str(e)}")
+            if update.callback_query:
+                update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
+            else:
+                update.message.reply_text("❌ An error occurred. Please try again.")
+    return wrapper
+
 # ----------- DROPBOX HELPERS ----------- #
 def get_dropbox_access_token(account):
     app_key = os.getenv(f"DROPBOX_{account.upper()}_APP_KEY")
@@ -207,13 +240,17 @@ def save_post_result(account, filename, success, error=None):
 
 # ----------- TELEGRAM HANDLERS ----------- #
 def start(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if is_banned(user_id):
-        update.message.reply_text("🚫 Access denied.")
-        return
+    try:
+        user_id = update.effective_user.id
+        if is_banned(user_id):
+            update.message.reply_text("🚫 Access denied.")
+            return
 
-    USER_STATE[user_id] = "awaiting_password"
-    update.message.reply_text("🔐 Enter password to access bot:")
+        USER_STATE[user_id] = "awaiting_password"
+        update.message.reply_text("🔐 Enter password to access bot:")
+    except Exception as e:
+        logger.error(f"Error in start handler: {str(e)}")
+        update.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_password(update: Update, context: CallbackContext):
     try:
@@ -263,14 +300,21 @@ def handle_password(update: Update, context: CallbackContext):
 
 @require_auth
 def show_accounts(update: Update, context: CallbackContext):
-    accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
-    buttons = [[InlineKeyboardButton(acc, callback_data=f"account:{acc}")] for acc in accounts]
-    reply_markup = InlineKeyboardMarkup(buttons)
-    
-    if update.callback_query:
-        update.callback_query.message.edit_text("Choose an account:", reply_markup=reply_markup)
-    else:
-        update.message.reply_text("Choose an account:", reply_markup=reply_markup)
+    try:
+        accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
+        buttons = [[InlineKeyboardButton(acc, callback_data=f"account:{acc}")] for acc in accounts]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        
+        if update.callback_query:
+            update.callback_query.message.edit_text("Choose an account:", reply_markup=reply_markup)
+        else:
+            update.message.reply_text("Choose an account:", reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Error in show_accounts: {str(e)}")
+        if update.callback_query:
+            update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
+        else:
+            update.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_back_to_accounts(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -279,6 +323,7 @@ def handle_back_to_accounts(update: Update, context: CallbackContext):
     reply_markup = InlineKeyboardMarkup(buttons)
     query.message.edit_text("Choose an account:", reply_markup=reply_markup)
 
+@require_auth
 def handle_account_selection(update: Update, context: CallbackContext):
     try:
         query = update.callback_query
