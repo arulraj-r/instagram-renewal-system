@@ -34,7 +34,7 @@ class DropboxToInstagramUploader:
         self.repo = os.getenv("GITHUB_REPOSITORY")
         self.gh_pat = os.getenv("GH_PAT")
 
-        self.dropbox_folder = "/ECLIPSED_BY_YOU"
+        self.dropbox_folder = "/eclipsed.by.you"
         self.telegram_bot = Bot(token=self.telegram_bot_token)
 
         self.dropbox_access_token = self.refresh_dropbox_token()
