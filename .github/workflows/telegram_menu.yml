@@ -2,17 +2,20 @@ name: Telegram Bot Scheduler (Every 3 hours)
 
 on:
   schedule:
-    - cron: '0 */3 * * *'  # every 3 hours
+    - cron: '0 */3 * * *'  # Every 3 hours
   workflow_dispatch:
 
 jobs:
   run-telegram-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 16  # Auto-kills if something fails
+    timeout-minutes: 16  # Auto-kill if unresponsive
 
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_BOT_PASSWORD: ${{ secrets.TELEGRAM_BOT_PASSWORD }}  # ✅ Add this
+      GH_PAT: ${{ secrets.GH_PAT }}  # ✅ Required for GitHub secret updates
+      GITHUB_REPOSITORY: ${{ github.repository }}  # ✅ Required by script for GitHub API
 
     steps:
       - name: Checkout code
