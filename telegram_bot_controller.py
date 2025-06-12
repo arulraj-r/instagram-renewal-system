@@ -98,39 +98,35 @@ def get_existing_file_sha(url, headers):
         logger.error(f"Error getting file SHA: {str(e)}")
         return None
 
-# ----------- SECURITY HELPERS ----------- #
-def is_banned(user_id):
-    banned = load_json(BANNED_PATH)
-    return str(user_id) in banned
-
-def ban_user(user_id):
-    banned = load_json(BANNED_PATH)
-    if str(user_id) not in banned:
-        banned.append(str(user_id))
-        save_json(BANNED_PATH, banned)
-
-def is_authorized(user_id):
-    return str(user_id) in AUTHORIZED_USERS
-
-def require_auth(func):
-    def wrapper(update: Update, context: CallbackContext, *args, **kwargs):
-        user_id = update.effective_user.id
-        if not is_authorized(user_id):
-            if update.callback_query:
-                update.callback_query.message.reply_text("🔐 Please /start and login first.")
-            else:
-                update.message.reply_text("🔐 Please /start and login first.")
-            return
-        return func(update, context, *args, **kwargs)
-    return wrapper
-
 # ----------- DROPBOX HELPERS ----------- #
-def get_dropbox_client(account):
-    token = os.getenv(f"DROPBOX_{account.upper()}_TOKEN")
-    if not token:
-        logger.error(f"Dropbox token not found for {account}")
+def get_dropbox_access_token(account):
+    app_key = os.getenv(f"DROPBOX_{account.upper()}_APP_KEY")
+    app_secret = os.getenv(f"DROPBOX_{account.upper()}_APP_SECRET")
+    refresh_token = os.getenv(f"DROPBOX_{account.upper()}_REFRESH")
+
+    if not app_key or not app_secret or not refresh_token:
+        logger.error(f"Missing Dropbox credentials for {account}")
         return None
-    return dropbox.Dropbox(token)
+
+    try:
+        response = requests.post("https://api.dropbox.com/oauth2/token", data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": app_key,
+            "client_secret": app_secret
+        })
+        response.raise_for_status()
+        return response.json().get("access_token")
+    except Exception as e:
+        logger.error(f"Dropbox token refresh error for {account}: {e}")
+        return None
+
+def get_dropbox_client(account):
+    token = get_dropbox_access_token(account)
+    if not token:
+        logger.error(f"Dropbox access token failed for {account}")
+        return None
+    return dropbox.Dropbox(oauth2_access_token=token)
 
 def count_files_in_folder(dbx, folder_path):
     try:
@@ -220,46 +216,50 @@ def start(update: Update, context: CallbackContext):
     update.message.reply_text("🔐 Enter password to access bot:")
 
 def handle_password(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    
-    if USER_STATE.get(user_id) != "awaiting_password":
-        return
+    try:
+        user_id = update.effective_user.id
+        text = update.message.text.strip()
+        
+        if USER_STATE.get(user_id) != "awaiting_password":
+            return
 
-    # Get password from environment variable
-    password = os.getenv(GITHUB_SECRET_NAME)
-    logger.info(f"Checking password for user {user_id}")
-    
-    if not password:
-        logger.error("TELEGRAM_BOT_PASSWORD not set in environment variables")
-        update.message.reply_text(
-            "❌ Bot configuration error: Password not set.\n"
-            "Please contact the administrator."
-        )
-        return
+        # Get password from environment variable
+        password = os.getenv(GITHUB_SECRET_NAME)
+        logger.info(f"Checking password for user {user_id}")
+        
+        if not password:
+            logger.error("TELEGRAM_BOT_PASSWORD not set in environment variables")
+            update.message.reply_text(
+                "❌ Bot configuration error: Password not set.\n"
+                "Please contact the administrator."
+            )
+            return
 
-    if text == password:
-        AUTHORIZED_USERS[str(user_id)] = True
-        del USER_STATE[user_id]
-        logger.info(f"User {user_id} authenticated")
+        if text == password:
+            AUTHORIZED_USERS[str(user_id)] = True
+            del USER_STATE[user_id]
+            logger.info(f"User {user_id} authenticated")
 
-        accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
-        status_text = "📊 Initial Status:\n\n"
+            accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
+            status_text = "📊 Initial Status:\n\n"
 
-        for account in accounts:
-            try:
-                files = get_remaining_files(account)
-                status_text += f"{account}: {files} files in Dropbox\n"
-            except Exception as e:
-                logger.error(f"Error for {account}: {e}")
-                status_text += f"{account}: error checking files\n"
+            for account in accounts:
+                try:
+                    files = get_remaining_files(account)
+                    status_text += f"{account}: {files} files in Dropbox\n"
+                except Exception as e:
+                    logger.error(f"Error for {account}: {e}")
+                    status_text += f"{account}: error checking files\n"
 
-        update.message.reply_text(status_text)
-        show_accounts(update, context)
-    else:
-        logger.warning(f"Failed login for {user_id}")
-        update.message.reply_text("❌ Incorrect password. Access denied.")
-        ban_user(user_id)
+            update.message.reply_text(status_text)
+            show_accounts(update, context)
+        else:
+            logger.warning(f"Failed login for {user_id}")
+            update.message.reply_text("❌ Incorrect password. Access denied.")
+            ban_user(user_id)
+    except Exception as e:
+        logger.error(f"Error in handle_password: {str(e)}")
+        update.message.reply_text("❌ An error occurred during login. Please try again.")
 
 @require_auth
 def show_accounts(update: Update, context: CallbackContext):
@@ -280,25 +280,34 @@ def handle_back_to_accounts(update: Update, context: CallbackContext):
     query.message.edit_text("Choose an account:", reply_markup=reply_markup)
 
 def handle_account_selection(update: Update, context: CallbackContext):
-    query = update.callback_query
-    account = query.data.split(":")[1]
-    context.user_data['account'] = account
-    
-    # Check token expiry on account selection
-    check_token_expiry(account, context)
-    
-    buttons = [
-        [InlineKeyboardButton("📆 Schedule Posts", callback_data="schedule")],
-        [InlineKeyboardButton("📋 View Schedule", callback_data="view_schedule")],
-        [InlineKeyboardButton("✏️ Set Static Caption", callback_data="caption")],
-        [InlineKeyboardButton("🔑 Update API Key", callback_data="update_token")],
-        [InlineKeyboardButton("⏸️ Pause/Resume", callback_data="pause")],
-        [InlineKeyboardButton("📊 Status Summary", callback_data="status")],
-        [InlineKeyboardButton("📤 Post Logs", callback_data="post_logs")],
-        [InlineKeyboardButton("♻ Reset Schedule", callback_data="reset")],
-        [InlineKeyboardButton("🔙 Back to Accounts", callback_data="back_to_accounts")]
-    ]
-    query.message.edit_text(f"Manage: {account}", reply_markup=InlineKeyboardMarkup(buttons))
+    try:
+        query = update.callback_query
+        if ":" not in query.data:
+            logger.warning(f"Invalid callback data: {query.data}")
+            return
+            
+        account = query.data.split(":")[1]
+        context.user_data['account'] = account
+        
+        # Check token expiry on account selection
+        check_token_expiry(account, context)
+        
+        buttons = [
+            [InlineKeyboardButton("📆 Schedule Posts", callback_data="schedule")],
+            [InlineKeyboardButton("📋 View Schedule", callback_data="view_schedule")],
+            [InlineKeyboardButton("✏️ Set Static Caption", callback_data="caption")],
+            [InlineKeyboardButton("🔑 Update API Key", callback_data="update_token")],
+            [InlineKeyboardButton("⏸️ Pause/Resume", callback_data="pause")],
+            [InlineKeyboardButton("📊 Status Summary", callback_data="status")],
+            [InlineKeyboardButton("📤 Post Logs", callback_data="post_logs")],
+            [InlineKeyboardButton("♻ Reset Schedule", callback_data="reset")],
+            [InlineKeyboardButton("🔙 Back to Accounts", callback_data="back_to_accounts")]
+        ]
+        query.message.edit_text(f"Manage: {account}", reply_markup=InlineKeyboardMarkup(buttons))
+    except Exception as e:
+        logger.error(f"Error in handle_account_selection: {str(e)}")
+        if update.callback_query:
+            update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_view_schedule(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -653,6 +662,10 @@ def create_time_button_grid(selected_times, max_slots):
 
 # ----------- PERIODIC CHECKS ----------- #
 def periodic_checks(context: CallbackContext):
+    if not AUTHORIZED_USERS:
+        logger.info("Skipping periodic check: no authorized users")
+        return
+        
     accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
     for account in accounts:
         try:
@@ -666,6 +679,12 @@ def main():
     if not token:
         print("❌ TELEGRAM_BOT_TOKEN not set")
         return
+
+    # Debug print for environment variables
+    print("TELEGRAM_BOT_PASSWORD env:", os.getenv("TELEGRAM_BOT_PASSWORD"))
+    print("DROPBOX_INKWISPS_APP_KEY env:", os.getenv("DROPBOX_INKWISPS_APP_KEY"))
+    print("DROPBOX_INKWISPS_APP_SECRET env:", os.getenv("DROPBOX_INKWISPS_APP_SECRET"))
+    print("DROPBOX_INKWISPS_REFRESH env:", os.getenv("DROPBOX_INKWISPS_REFRESH"))
 
     # Ensure scheduler directory exists
     os.makedirs(SCHEDULER_DIR, exist_ok=True)
