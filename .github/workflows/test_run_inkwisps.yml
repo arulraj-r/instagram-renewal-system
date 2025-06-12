@@ -34,5 +34,5 @@ jobs:
           python -m pip install --no-cache-dir requests dropbox python-dotenv pynacl
           python -m pip install --no-cache-dir python-telegram-bot==13.15
 
-      - name: Run eclipsed_by_you_post.py
-        run: python eclipsed_by_you_post.py
+      - name: Run telegram_bot_controller.py
+        run: python telegram_bot_controller.py
