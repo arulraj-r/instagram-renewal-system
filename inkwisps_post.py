@@ -5,7 +5,7 @@ import requests
 import dropbox
 import logging
 from datetime import datetime, timezone
-import telegram
+from telegram import Bot
 
 class DropboxToInstagramUploader:
     DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token"
@@ -27,7 +27,7 @@ class DropboxToInstagramUploader:
         self.telegram_bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
         if self.telegram_bot_token and self.telegram_chat_id:
-            self.telegram_bot = telegram.Bot(token=self.telegram_bot_token)
+            self.telegram_bot = Bot(token=self.telegram_bot_token)
         
         # Configuration
         self.max_posts_per_run = 1  # Process only one post per run
@@ -149,7 +149,7 @@ class DropboxToInstagramUploader:
             return []
 
     def generate_caption(self, filename):
-        return "✨ #inkwisps ✨"
+        return "✨ :) #myboyishlife ✨\n\n#quotes #love #motivation #quoteoftheday #life #motivationalquotes\n\n#poetry #lovequotes #quotesaboutlife #quotesdaily #lifequotes #loveyourself #mindset #quotesoftheday #lifestyle #happiness #happy"
 
     def upload_video_to_instagram(self, temp_link, caption):
         return self._upload_media_to_instagram(temp_link, caption, media_type="REELS")
