@@ -1,125 +1,116 @@
-import os, json, requests
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
+import os
+import json
+import logging
+import requests
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler
+from datetime import datetime, timedelta
 
-CONFIG_PATH = 'scheduler/config.json'
-CAPTION_PATH = 'scheduler/captions.json'
-PAUSED_PATH = 'scheduler/paused.json'
-TOKEN_EXPIRY_PATH = 'scheduler/token_expiry.json'
+# ----------- SETUP LOGGING ----------- #
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-ACCOUNTS = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
+# ----------- FILE PATHS ----------- #
+CONFIG_PATH = "scheduler/config.json"
+CAPTIONS_PATH = "scheduler/captions.json"
+PAUSED_PATH = "scheduler/paused.json"
+EXPIRY_PATH = "scheduler/token_expiry.json"
 
-# Load or initialize JSON
+# ----------- HELPERS ----------- #
+def ensure_file(file_path, default):
+    if not os.path.exists(file_path):
+        with open(file_path, 'w') as f:
+            json.dump(default, f, indent=2)
 
 def load_json(path):
-    return json.load(open(path)) if os.path.exists(path) else {}
+    ensure_file(path, {})
+    with open(path, 'r') as f:
+        return json.load(f)
 
 def save_json(path, data):
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
-# --- Start Menu ---
+# ----------- TELEGRAM HANDLERS ----------- #
 def start(update: Update, context: CallbackContext):
-    buttons = [[InlineKeyboardButton(acc, callback_data=f"account|{acc}")] for acc in ACCOUNTS]
-    update.message.reply_text("📱 Choose an Instagram account:", reply_markup=InlineKeyboardMarkup(buttons))
+    accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
+    buttons = [[InlineKeyboardButton(acc, callback_data=f"account:{acc}")] for acc in accounts]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    update.message.reply_text("Choose an account:", reply_markup=reply_markup)
 
-# --- Handle account selection ---
-def account_menu(update: Update, context: CallbackContext):
-    _, acc = update.callback_query.data.split('|')
-    context.user_data['account'] = acc
+def handle_account_selection(update: Update, context: CallbackContext):
+    query = update.callback_query
+    account = query.data.split(":")[1]
+    context.user_data['account'] = account
     buttons = [
-        [InlineKeyboardButton("📅 Schedule Post", callback_data=f"schedule|{acc}")],
-        [InlineKeyboardButton("🔑 Update API Key", callback_data=f"update_api|{acc}")],
-        [InlineKeyboardButton("📝 Set Caption", callback_data=f"caption|{acc}")],
-        [InlineKeyboardButton("⏸️ Pause/Resume", callback_data=f"pause|{acc}")],
-        [InlineKeyboardButton("📊 View Status", callback_data=f"status|{acc}")]
+        [InlineKeyboardButton("📆 Schedule Posts", callback_data="schedule")],
+        [InlineKeyboardButton("🔑 Update API Key", callback_data="update_token")],
+        [InlineKeyboardButton("✏️ Set Static Caption", callback_data="caption")],
+        [InlineKeyboardButton("⏸️ Pause/Resume", callback_data="pause")],
+        [InlineKeyboardButton("📊 Status Summary", callback_data="status")],
+        [InlineKeyboardButton("♻ Reset Schedule", callback_data="reset")]
     ]
-    update.callback_query.edit_message_text(f"⚙️ Actions for *{acc}*:", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons))
+    query.message.reply_text(f"Manage: {account}", reply_markup=InlineKeyboardMarkup(buttons))
 
-# --- Schedule Post Logic (Simple Example) ---
 def handle_schedule(update: Update, context: CallbackContext):
-    _, acc = update.callback_query.data.split('|')
-    update.callback_query.message.reply_text(f"📆 Enter post count for each weekday (Mon-Sun) for *{acc}*, separated by commas:", parse_mode='Markdown')
-    context.user_data['mode'] = 'await_schedule'
-    context.user_data['account'] = acc
+    weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    buttons = [[InlineKeyboardButton(day, callback_data=f"weekday:{day}")] for day in weekdays]
+    update.callback_query.message.reply_text("Select a weekday:", reply_markup=InlineKeyboardMarkup(buttons))
 
-# --- Capturing replies ---
-def text_handler(update: Update, context: CallbackContext):
-    mode = context.user_data.get('mode')
-    acc = context.user_data.get('account')
-    if mode == 'await_schedule':
-        counts = update.message.text.split(',')
-        if len(counts) != 7:
-            return update.message.reply_text("❌ Please provide 7 numbers, comma-separated (e.g. 1,0,2,1,0,0,1)")
-        config = load_json(CONFIG_PATH)
-        config[acc] = {'weekdays': counts}
-        save_json(CONFIG_PATH, config)
-        update.message.reply_text("✅ Schedule updated!")
+def handle_weekday(update: Update, context: CallbackContext):
+    query = update.callback_query
+    weekday = query.data.split(":")[1]
+    account = context.user_data['account']
+    context.user_data['weekday'] = weekday
+    query.message.reply_text(f"How many posts do you want on {weekday}?")
+    context.user_data['next_action'] = 'post_count'
+
+def handle_message(update: Update, context: CallbackContext):
+    text = update.message.text
+    account = context.user_data.get('account')
+    weekday = context.user_data.get('weekday')
+
+    if context.user_data.get('next_action') == 'post_count':
+        try:
+            count = int(text)
+            context.user_data['post_count'] = count
+            update.message.reply_text(f"Enter {count} scheduled times (e.g. 10:30, 14:00, 18:00)")
+            context.user_data['next_action'] = 'timeslot'
+        except:
+            update.message.reply_text("Invalid number. Enter post count again:")
+
+    elif context.user_data.get('next_action') == 'timeslot':
+        times = text.replace(" ", "").split(",")
+        if len(times) != context.user_data.get('post_count'):
+            update.message.reply_text(f"You entered {len(times)} times but expected {context.user_data['post_count']}.")
+            return
+
+        cfg = load_json(CONFIG_PATH)
+        cfg.setdefault(account, {})[weekday] = times
+        save_json(CONFIG_PATH, cfg)
+        update.message.reply_text("✅ Schedule saved.")
         context.user_data.clear()
-    elif mode == 'await_caption':
-        cap_data = load_json(CAPTION_PATH)
-        cap_data[acc] = update.message.text
-        save_json(CAPTION_PATH, cap_data)
-        update.message.reply_text("📝 Caption saved.")
-        context.user_data.clear()
-    elif mode == 'await_api':
-        token_data = load_json(TOKEN_EXPIRY_PATH)
-        token_data[acc] = {'token': update.message.text}
-        save_json(TOKEN_EXPIRY_PATH, token_data)
-        update.message.reply_text("🔐 Token updated!")
-        context.user_data.clear()
 
-# --- API Key Update ---
-def update_api(update: Update, context: CallbackContext):
-    _, acc = update.callback_query.data.split('|')
-    context.user_data['mode'] = 'await_api'
-    context.user_data['account'] = acc
-    update.callback_query.message.reply_text("🔐 Send new Instagram access token:")
+# Add other handlers...
 
-# --- Set Caption ---
-def set_caption(update: Update, context: CallbackContext):
-    _, acc = update.callback_query.data.split('|')
-    context.user_data['mode'] = 'await_caption'
-    context.user_data['account'] = acc
-    update.callback_query.message.reply_text("📝 Send the static caption you want to use:")
-
-# --- Pause/Resume ---
-def toggle_pause(update: Update, context: CallbackContext):
-    _, acc = update.callback_query.data.split('|')
-    paused = load_json(PAUSED_PATH)
-    paused[acc] = not paused.get(acc, False)
-    save_json(PAUSED_PATH, paused)
-    status = "⏸️ Paused" if paused[acc] else "▶️ Resumed"
-    update.callback_query.message.reply_text(f"{status} posting for {acc}.")
-
-# --- Status ---
-def view_status(update: Update, context: CallbackContext):
-    _, acc = update.callback_query.data.split('|')
-    config = load_json(CONFIG_PATH).get(acc, {})
-    paused = load_json(PAUSED_PATH).get(acc, False)
-    cap = load_json(CAPTION_PATH).get(acc, 'No caption')
-    update.callback_query.message.reply_text(
-        f"📊 *{acc}* status:
-- Paused: `{paused}`
-- Schedule: `{config}`
-- Caption: `{cap}`",
-        parse_mode='Markdown'
-    )
-
-# --- Main Bot Setup ---
+# ----------- MAIN FUNCTION ----------- #
 def main():
-    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    updater = Updater(TOKEN, use_context=True)
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        print("TELEGRAM_BOT_TOKEN missing")
+        return
+
+    updater = Updater(token)
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CallbackQueryHandler(account_menu, pattern=r"^account\|"))
-    dp.add_handler(CallbackQueryHandler(handle_schedule, pattern=r"^schedule\|"))
-    dp.add_handler(CallbackQueryHandler(update_api, pattern=r"^update_api\|"))
-    dp.add_handler(CallbackQueryHandler(set_caption, pattern=r"^caption\|"))
-    dp.add_handler(CallbackQueryHandler(toggle_pause, pattern=r"^pause\|"))
-    dp.add_handler(CallbackQueryHandler(view_status, pattern=r"^status\|"))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, text_handler))
+    dp.add_handler(CallbackQueryHandler(handle_account_selection, pattern="^account:"))
+    dp.add_handler(CallbackQueryHandler(handle_schedule, pattern="^schedule$"))
+    dp.add_handler(CallbackQueryHandler(handle_weekday, pattern="^weekday:"))
+    dp.add_handler(MessageHandler(None, handle_message))
 
     updater.start_polling()
     updater.idle()
