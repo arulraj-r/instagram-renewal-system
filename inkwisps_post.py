@@ -104,7 +104,7 @@ class DropboxToInstagramUploader:
 
         self.send_message(f"🚀 Uploading: {name}\n📂 Type: {media_type}\n📐 Size: {file_size}\n📄 Path: {file.path_lower}\n📦 Remaining: {files_remaining}")
 
-        caption = "#inkwisps ✨"
+        caption = "#inkwisps #✨ #✒️ \n #📝 \n#🔏"
 
         url = f"{self.INSTAGRAM_API_BASE}/{self.instagram_account_id}/media"
         data = {
