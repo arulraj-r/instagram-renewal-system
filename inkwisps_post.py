@@ -30,12 +30,11 @@ class DropboxToInstagramUploader:
             self.telegram_bot = telegram.Bot(token=self.telegram_bot_token)
         
         # Configuration
-        self.max_posts_per_run = 1
+        self.max_posts_per_run = 1  # Process only one post per run
         self.retry_attempts = 3
         self.retry_delay = 60
-        self.sleep_time = 1800  # 30 minutes
         
-        self.dropbox_folder = "/boyishLife"
+        self.dropbox_folder = "/inkwisps"
         
         # Initialize Dropbox
         self.refresh_dropbox_access_token()
@@ -150,7 +149,7 @@ class DropboxToInstagramUploader:
             return []
 
     def generate_caption(self, filename):
-        return "✨ :) #myboyishlife ✨\n\n#quotes #love #motivation #quoteoftheday #life #motivationalquotes\n\n#poetry #lovequotes #quotesaboutlife #quotesdaily #lifequotes #loveyourself #mindset #quotesoftheday #lifestyle #happiness #happy"
+        return "✨ #inkwisps ✨"
 
     def upload_video_to_instagram(self, temp_link, caption):
         return self._upload_media_to_instagram(temp_link, caption, media_type="REELS")
@@ -251,34 +250,34 @@ class DropboxToInstagramUploader:
             self.logger.info("No files found in Dropbox folder.")
             return
 
-        for file_metadata in files:
-            self.logger.info(f"Processing file: {file_metadata.name}")
-            caption = self.generate_caption(file_metadata.name)
+        # Process only the first file found
+        file_metadata = files[0]
+        self.logger.info(f"Processing file: {file_metadata.name}")
+        caption = self.generate_caption(file_metadata.name)
 
-            try:
-                temp_link_obj = self.dbx.files_get_temporary_link(file_metadata.path_lower)
-                temp_link = temp_link_obj.link
-            except Exception as e:
-                error_msg = f"Failed to get temporary link for {file_metadata.name}: {e}"
-                self.logger.error(error_msg)
-                self.send_telegram_message(f"❌ {error_msg}")
-                continue
+        try:
+            temp_link_obj = self.dbx.files_get_temporary_link(file_metadata.path_lower)
+            temp_link = temp_link_obj.link
+        except Exception as e:
+            error_msg = f"Failed to get temporary link for {file_metadata.name}: {e}"
+            self.logger.error(error_msg)
+            self.send_telegram_message(f"❌ {error_msg}")
+            return
 
-            ext = file_metadata.name.lower()
-            if ext.endswith(('.mp4', '.mov')):
-                success = self.upload_video_to_instagram(temp_link, caption)
-            elif ext.endswith(('.jpg', '.jpeg', '.png')):
-                success = self.upload_image_to_instagram(temp_link, caption)
-            else:
-                self.logger.warning(f"Unsupported file type: {file_metadata.name}")
-                continue
+        ext = file_metadata.name.lower()
+        if ext.endswith(('.mp4', '.mov')):
+            success = self.upload_video_to_instagram(temp_link, caption)
+        elif ext.endswith(('.jpg', '.jpeg', '.png')):
+            success = self.upload_image_to_instagram(temp_link, caption)
+        else:
+            self.logger.warning(f"Unsupported file type: {file_metadata.name}")
+            return
 
-            if success:
-                self.delete_dropbox_file(file_metadata.path_lower)
-                self.logger.info(f"Successfully uploaded and deleted {file_metadata.name}")
-                break
-            else:
-                self.logger.warning(f"Failed to upload {file_metadata.name}, moving to next file.")
+        if success:
+            self.delete_dropbox_file(file_metadata.path_lower)
+            self.logger.info(f"Successfully uploaded and deleted {file_metadata.name}")
+        else:
+            self.logger.warning(f"Failed to upload {file_metadata.name}")
 
     def run(self):
         try:
