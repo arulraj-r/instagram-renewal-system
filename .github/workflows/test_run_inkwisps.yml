@@ -4,8 +4,21 @@ on:
   workflow_dispatch:
 
 jobs:
-  post_inkwisps:
+  test_inkwisps:
     runs-on: ubuntu-latest
+
+    env:  # <-- MUST be here, at job level
+      IG_INKWISPS_TOKEN: ${{ secrets.IG_INKWISPS_TOKEN }}
+      IG_INKWISPS_ID: ${{ secrets.IG_INKWISPS_ID }}
+      DROPBOX_INKWISPS_TOKEN: ${{ secrets.DROPBOX_INKWISPS_TOKEN }}
+      DROPBOX_INKWISPS_REFRESH: ${{ secrets.DROPBOX_INKWISPS_REFRESH }}
+      DROPBOX_INKWISPS_APP_KEY: ${{ secrets.DROPBOX_INKWISPS_APP_KEY }}
+      DROPBOX_INKWISPS_APP_SECRET: ${{ secrets.DROPBOX_INKWISPS_APP_SECRET }}
+      GH_PAT: ${{ secrets.GH_PAT }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
@@ -20,15 +33,4 @@ jobs:
           pip install requests dropbox python-dotenv pyTelegramBotAPI pynacl
 
       - name: Run inkwisps_post.py
-        env:
-          IG_INKWISPS_TOKEN: ${{ secrets.IG_INKWISPS_TOKEN }}
-          IG_INKWISPS_ID: ${{ secrets.IG_INKWISPS_ID }}
-          DROPBOX_INKWISPS_TOKEN: ${{ secrets.DROPBOX_INKWISPS_TOKEN }}
-          DROPBOX_INKWISPS_REFRESH: ${{ secrets.DROPBOX_INKWISPS_REFRESH }}
-          DROPBOX_INKWISPS_APP_KEY: ${{ secrets.DROPBOX_INKWISPS_APP_KEY }}
-          DROPBOX_INKWISPS_APP_SECRET: ${{ secrets.DROPBOX_INKWISPS_APP_SECRET }}
-          GH_PAT: ${{ secrets.GH_PAT }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
         run: python inkwisps_post.py
