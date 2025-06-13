@@ -16,6 +16,7 @@ class DropboxToInstagramUploader:
     def __init__(self):
         self.script_name = "eclipsed_by_you_post.py"
         self.MAX_WAIT_SECONDS = int(os.getenv("MAX_WAIT_SECONDS", 600))  # 10 minutes default
+        self.ist = timezone('Asia/Kolkata')  # Indian Standard Time
 
         # Logging setup
         logging.basicConfig(
@@ -105,28 +106,36 @@ class DropboxToInstagramUploader:
         try:
             with open("scheduler/config.json", "r") as f:
                 schedule = json.load(f)
-            today = datetime.utcnow().strftime("%A")
-            now = datetime.utcnow()
-
+            
+            # Get current time in IST
+            now_utc = datetime.now(utc)
+            now_ist = now_utc.astimezone(self.ist)
+            today = now_ist.strftime("%A")
+            
+            self.logger.info(f"Current IST time: {now_ist.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            
             allowed_times = schedule.get("eclipsed_by_you", {}).get(today, [])
             for time_str in allowed_times:
+                # Parse the scheduled time in IST
                 scheduled_time = datetime.strptime(time_str, "%H:%M").replace(
-                    year=now.year, month=now.month, day=now.day
+                    year=now_ist.year, month=now_ist.month, day=now_ist.day
                 )
-                delta = (scheduled_time - now).total_seconds()
-
+                scheduled_time = self.ist.localize(scheduled_time)
+                
+                delta = (scheduled_time - now_ist).total_seconds()
+                
                 if 0 <= delta <= 600:  # within 10 minutes
-                    self.logger.info(f"Sleeping {int(delta)} seconds until scheduled post.")
+                    self.logger.info(f"Sleeping {int(delta)} seconds until scheduled post at {scheduled_time.strftime('%H:%M:%S %Z')}")
                     time.sleep(int(delta))
                     return True  # proceed with post
-
+                
                 if -60 <= delta < 0:  # within 1-minute grace period
-                    self.logger.info("⏱️ Within 1-minute grace period. Proceeding to post.")
+                    self.logger.info(f"⏱️ Within 1-minute grace period. Scheduled time was {scheduled_time.strftime('%H:%M:%S %Z')}")
                     return True  # allow small delay
-
+            
             self.logger.info("⏰ Not in schedule window.")
             return False
-
+            
         except Exception as e:
             self.logger.error(f"Schedule check failed: {e}")
             return True  # fail-safe fallback
