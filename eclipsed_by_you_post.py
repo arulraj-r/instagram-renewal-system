@@ -5,7 +5,7 @@ import logging
 import requests
 import dropbox
 from telegram import Bot
-from datetime import datetime
+from datetime import datetime, timedelta
 from pytz import timezone, utc
 from nacl import encoding, public
 
@@ -15,6 +15,7 @@ class DropboxToInstagramUploader:
 
     def __init__(self):
         self.script_name = "eclipsed_by_you_post.py"
+        self.MAX_WAIT_SECONDS = int(os.getenv("MAX_WAIT_SECONDS", 600))  # 10 minutes default
 
         # Logging setup
         logging.basicConfig(
@@ -104,19 +105,31 @@ class DropboxToInstagramUploader:
         try:
             with open("scheduler/config.json", "r") as f:
                 schedule = json.load(f)
-
-            IST = timezone("Asia/Kolkata")
-            now_ist = datetime.now(utc).astimezone(IST)
-            today = now_ist.strftime("%A")
-            current_time = now_ist.strftime("%H:%M")
+            today = datetime.utcnow().strftime("%A")
+            now = datetime.utcnow()
 
             allowed_times = schedule.get("eclipsed_by_you", {}).get(today, [])
-            self.logger.info(f"Today: {today}, Time: {current_time}, Scheduled: {allowed_times}")
+            for time_str in allowed_times:
+                scheduled_time = datetime.strptime(time_str, "%H:%M").replace(
+                    year=now.year, month=now.month, day=now.day
+                )
+                delta = (scheduled_time - now).total_seconds()
 
-            return current_time in allowed_times
+                if 0 <= delta <= 600:  # within 10 minutes
+                    self.logger.info(f"Sleeping {int(delta)} seconds until scheduled post.")
+                    time.sleep(int(delta))
+                    return True  # proceed with post
+
+                if -60 <= delta < 0:  # within 1-minute grace period
+                    self.logger.info("⏱️ Within 1-minute grace period. Proceeding to post.")
+                    return True  # allow small delay
+
+            self.logger.info("⏰ Not in schedule window.")
+            return False
+
         except Exception as e:
             self.logger.error(f"Schedule check failed: {e}")
-            return True  # fallback
+            return True  # fail-safe fallback
 
     def post_to_instagram(self, file):
         name = file.name
@@ -131,7 +144,8 @@ class DropboxToInstagramUploader:
 
         caption = "#eclipsed_by_you ✨\n#🎵 #🎶 #🎧 #aesthetic"
 
-        url = f"{self.INSTAGRAM_API_BASE}/{self.instagram_account_id}/media"
+        # Step 1: Upload to IG
+        upload_url = f"{self.INSTAGRAM_API_BASE}/{self.instagram_account_id}/media"
         data = {
             "access_token": self.instagram_access_token,
             "caption": caption
@@ -143,7 +157,7 @@ class DropboxToInstagramUploader:
         else:
             data["image_url"] = temp_link
 
-        res = requests.post(url, data=data)
+        res = requests.post(upload_url, data=data)
         if res.status_code != 200:
             err = res.json().get("error", {}).get("message", "Unknown")
             code = res.json().get("error", {}).get("code", "N/A")
@@ -152,9 +166,13 @@ class DropboxToInstagramUploader:
 
         creation_id = res.json()["id"]
 
+        # Step 2: If REELS, wait for it to process
         if media_type == "REELS":
-            for _ in range(12):
-                status = requests.get(f"{self.INSTAGRAM_API_BASE}/{creation_id}?fields=status_code&access_token={self.instagram_access_token}").json()
+            for _ in range(12):  # wait up to 1 minute
+                status = requests.get(
+                    f"{self.INSTAGRAM_API_BASE}/{creation_id}",
+                    params={"fields": "status_code", "access_token": self.instagram_access_token}
+                ).json()
                 if status.get("status_code") == "FINISHED":
                     break
                 elif status.get("status_code") == "ERROR":
@@ -162,8 +180,17 @@ class DropboxToInstagramUploader:
                     return False
                 time.sleep(5)
 
-        pub = requests.post(f"{self.INSTAGRAM_API_BASE}/{self.instagram_account_id}/media_publish",
-                            data={"creation_id": creation_id, "access_token": self.instagram_access_token})
+        # Step 3: Publish
+        publish_url = f"{self.INSTAGRAM_API_BASE}/{self.instagram_account_id}/media_publish"
+        publish_data = {
+            "creation_id": creation_id,
+            "access_token": self.instagram_access_token
+        }
+
+        if media_type == "REELS":
+            publish_data["share_to_feed"] = "false"  # Don't show in feed/grid
+
+        pub = requests.post(publish_url, data=publish_data)
         if pub.status_code == 200:
             self.send_message(f"✅ Uploaded: {name}\n📦 Files left: {files_remaining - 1}")
             self.dbx.files_delete_v2(file.path_lower)
