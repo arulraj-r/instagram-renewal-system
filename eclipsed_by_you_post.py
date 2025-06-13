@@ -124,7 +124,7 @@ class DropboxToInstagramUploader:
                     scheduled_time = now_ist.replace(hour=scheduled_dt.hour, minute=scheduled_dt.minute, second=0, microsecond=0)
                     delta = int((scheduled_time - now_ist).total_seconds())
 
-                    if -60 <= delta <= 600:  # Accept from 1 min before to 10 min after
+                    if -120 <= delta <= 600:  # Accept from 1 min before to 10 min after
                         if delta > 0:
                             self.logger.info(f"⏳ Sleeping {delta} seconds for schedule match: {t}")
                             time.sleep(delta)
