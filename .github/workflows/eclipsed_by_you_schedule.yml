@@ -30,7 +30,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install dropbox requests python-telegram-bot==13.15 pynacl
+          pip install dropbox requests python-telegram-bot==13.15 pynacl pytz
 
       - name: Run ECLIPSED_BY_YOU Posting Script
         run: python eclipsed_by_you_post.py
