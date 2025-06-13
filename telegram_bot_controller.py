@@ -134,26 +134,50 @@ def require_auth(func):
 # ----------- DROPBOX HELPERS ----------- #
 def get_dropbox_access_token(account):
     """Get Dropbox access token with better error handling and debug logging."""
-    # Normalize account name for environment variables
-    env_account = account.replace('-', '_').upper()
-    
-    app_key = os.getenv(f"DROPBOX_{env_account}_APP_KEY")
-    app_secret = os.getenv(f"DROPBOX_{env_account}_APP_SECRET")
-    refresh_token = os.getenv(f"DROPBOX_{env_account}_REFRESH")
+    # Map account names to their exact secret names
+    account_secrets = {
+        "inkwisps": {
+            "app_key": "DROPBOX_INKWISPS_APP_KEY",
+            "app_secret": "DROPBOX_INKWISPS_APP_SECRET",
+            "refresh": "DROPBOX_INKWISPS_REFRESH",
+            "token": "DROPBOX_INKWISPS_TOKEN"
+        },
+        "ink_wisps": {
+            "app_key": "DROPBOX_INK_WISPS_APP_KEY",
+            "app_secret": "DROPBOX_INK_WISPS_APP_SECRET",
+            "refresh": "DROPBOX_INK_WISPS_REFRESH",
+            "token": "DROPBOX_INK_WISPS_TOKEN"
+        },
+        "eclipsed_by_you": {
+            "app_key": "DROPBOX_ECLIPSED_BY_YOU_APP_KEY",
+            "app_secret": "DROPBOX_ECLIPSED_BY_YOU_APP_SECRET",
+            "refresh": "DROPBOX_ECLIPSED_BY_YOU_REFRESH",
+            "token": "DROPBOX_ECLIPSED_BY_YOU_TOKEN"
+        }
+    }
+
+    if account not in account_secrets:
+        logger.error(f"Unknown account: {account}")
+        return None
+
+    secrets = account_secrets[account]
+    app_key = os.getenv(secrets["app_key"])
+    app_secret = os.getenv(secrets["app_secret"])
+    refresh_token = os.getenv(secrets["refresh"])
 
     # Debug logging
-    logger.info(f"Checking Dropbox credentials for {account} (env: {env_account})")
-    logger.debug(f"APP_KEY exists: {bool(app_key)}")
-    logger.debug(f"APP_SECRET exists: {bool(app_secret)}")
-    logger.debug(f"REFRESH_TOKEN exists: {bool(refresh_token)}")
+    logger.info(f"Checking Dropbox credentials for {account}")
+    logger.debug(f"{secrets['app_key']} exists: {bool(app_key)}")
+    logger.debug(f"{secrets['app_secret']} exists: {bool(app_secret)}")
+    logger.debug(f"{secrets['refresh']} exists: {bool(refresh_token)}")
 
     missing_creds = []
     if not app_key:
-        missing_creds.append("APP_KEY")
+        missing_creds.append(secrets["app_key"])
     if not app_secret:
-        missing_creds.append("APP_SECRET")
+        missing_creds.append(secrets["app_secret"])
     if not refresh_token:
-        missing_creds.append("REFRESH_TOKEN")
+        missing_creds.append(secrets["refresh"])
 
     if missing_creds:
         logger.error(f"Missing Dropbox credentials for {account}: {', '.join(missing_creds)}")
@@ -1011,12 +1035,34 @@ def main():
     
     # Check Dropbox credentials
     accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
+    account_secrets = {
+        "inkwisps": {
+            "app_key": "DROPBOX_INKWISPS_APP_KEY",
+            "app_secret": "DROPBOX_INKWISPS_APP_SECRET",
+            "refresh": "DROPBOX_INKWISPS_REFRESH",
+            "token": "DROPBOX_INKWISPS_TOKEN"
+        },
+        "ink_wisps": {
+            "app_key": "DROPBOX_INK_WISPS_APP_KEY",
+            "app_secret": "DROPBOX_INK_WISPS_APP_SECRET",
+            "refresh": "DROPBOX_INK_WISPS_REFRESH",
+            "token": "DROPBOX_INK_WISPS_TOKEN"
+        },
+        "eclipsed_by_you": {
+            "app_key": "DROPBOX_ECLIPSED_BY_YOU_APP_KEY",
+            "app_secret": "DROPBOX_ECLIPSED_BY_YOU_APP_SECRET",
+            "refresh": "DROPBOX_ECLIPSED_BY_YOU_REFRESH",
+            "token": "DROPBOX_ECLIPSED_BY_YOU_TOKEN"
+        }
+    }
+
     for account in accounts:
-        env_account = account.replace('-', '_').upper()
+        secrets = account_secrets[account]
         print(f"\nDropbox credentials for {account}:")
-        print(f"DROPBOX_{env_account}_APP_KEY:", "Set" if os.getenv(f"DROPBOX_{env_account}_APP_KEY") else "Not Set")
-        print(f"DROPBOX_{env_account}_APP_SECRET:", "Set" if os.getenv(f"DROPBOX_{env_account}_APP_SECRET") else "Not Set")
-        print(f"DROPBOX_{env_account}_REFRESH:", "Set" if os.getenv(f"DROPBOX_{env_account}_REFRESH") else "Not Set")
+        print(f"{secrets['app_key']}:", "Set" if os.getenv(secrets['app_key']) else "Not Set")
+        print(f"{secrets['app_secret']}:", "Set" if os.getenv(secrets['app_secret']) else "Not Set")
+        print(f"{secrets['refresh']}:", "Set" if os.getenv(secrets['refresh']) else "Not Set")
+        print(f"{secrets['token']}:", "Set" if os.getenv(secrets['token']) else "Not Set")
 
     # Ensure scheduler directory exists
     os.makedirs(SCHEDULER_DIR, exist_ok=True)
