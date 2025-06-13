@@ -6,6 +6,7 @@ import requests
 import dropbox
 from telegram import Bot
 from datetime import datetime
+from pytz import timezone, utc
 from nacl import encoding, public
 
 class DropboxToInstagramUploader:
@@ -13,9 +14,9 @@ class DropboxToInstagramUploader:
     INSTAGRAM_API_BASE = "https://graph.facebook.com/v18.0"
 
     def __init__(self):
-        self.script_name = "ECLIPSED_BY_YOU_post.py"
+        self.script_name = "eclipsed_by_you_post.py"
 
-        # Logging
+        # Logging setup
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s - %(levelname)s - %(message)s",
@@ -23,7 +24,7 @@ class DropboxToInstagramUploader:
         )
         self.logger = logging.getLogger()
 
-        # Secrets
+        # Environment secrets
         self.instagram_access_token = os.getenv("IG_ECLIPSED_BY_YOU_TOKEN")
         self.instagram_account_id = os.getenv("IG_ECLIPSED_BY_YOU_ID")
         self.dropbox_app_key = os.getenv("DROPBOX_ECLIPSED_BY_YOU_APP_KEY")
@@ -41,14 +42,14 @@ class DropboxToInstagramUploader:
         self.dbx = dropbox.Dropbox(oauth2_access_token=self.dropbox_access_token)
 
     def send_message(self, msg):
-        prefix = f"[eclipsed_by_you_post.py]\n"
+        prefix = f"[{self.script_name}]\n"
         try:
             self.telegram_bot.send_message(chat_id=self.telegram_chat_id, text=prefix + msg)
         except Exception as e:
             self.logger.error(f"Telegram send error: {e}")
 
     def refresh_dropbox_token(self):
-        self.logger.info("Refreshing Dropbox token...")
+        self.logger.info("🔁 Refreshing Dropbox token...")
         data = {
             "grant_type": "refresh_token",
             "refresh_token": self.dropbox_refresh_token,
@@ -59,10 +60,10 @@ class DropboxToInstagramUploader:
         if r.status_code == 200:
             new_token = r.json().get("access_token")
             self.update_github_secret("DROPBOX_ECLIPSED_BY_YOU_TOKEN", new_token)
-            self.logger.info("Dropbox token refreshed.")
+            self.logger.info("✅ Dropbox token refreshed.")
             return new_token
         else:
-            self.send_message("❌ Dropbox refresh failed: " + r.text)
+            self.send_message("❌ Dropbox token refresh failed:\n" + r.text)
             raise Exception("Dropbox refresh failed.")
 
     def update_github_secret(self, secret_name, secret_value):
@@ -71,9 +72,11 @@ class DropboxToInstagramUploader:
                 "Authorization": f"token {self.gh_pat}",
                 "Accept": "application/vnd.github+json"
             }
-            pubkey_resp = requests.get(f"https://api.github.com/repos/{self.repo}/actions/secrets/public-key", headers=headers)
+            pubkey_resp = requests.get(
+                f"https://api.github.com/repos/{self.repo}/actions/secrets/public-key",
+                headers=headers
+            )
             key_data = pubkey_resp.json()
-
             pubkey = public.PublicKey(key_data["key"].encode(), encoding.Base64Encoder())
             sealed = public.SealedBox(pubkey).encrypt(secret_value.encode())
             encrypted = encoding.Base64Encoder().encode(sealed).decode()
@@ -85,32 +88,35 @@ class DropboxToInstagramUploader:
             )
             return res.status_code in [201, 204]
         except Exception as e:
-            self.logger.error(f"Failed to update secret: {e}")
+            self.logger.error(f"GitHub secret update failed: {e}")
             return False
 
     def list_dropbox_files(self):
-        files = self.dbx.files_list_folder(self.dropbox_folder).entries
-        valid_exts = ('.mp4', '.mov', '.jpg', '.jpeg', '.png')
-        return [f for f in files if f.name.lower().endswith(valid_exts)]
+        try:
+            files = self.dbx.files_list_folder(self.dropbox_folder).entries
+            valid_exts = ('.mp4', '.mov', '.jpg', '.jpeg', '.png')
+            return [f for f in files if f.name.lower().endswith(valid_exts)]
+        except Exception as e:
+            self.send_message(f"❌ Dropbox folder read failed: {e}")
+            return []
 
     def is_scheduled_time(self):
-    try:
-        with open("scheduler/config.json", "r") as f:
-            schedule = json.load(f)
+        try:
+            with open("scheduler/config.json", "r") as f:
+                schedule = json.load(f)
 
-        IST = timezone("Asia/Kolkata")
-        now_ist = datetime.now(utc).astimezone(IST)
-        today = now_ist.strftime("%A")
-        now = now_ist.strftime("%H:%M")
+            IST = timezone("Asia/Kolkata")
+            now_ist = datetime.now(utc).astimezone(IST)
+            today = now_ist.strftime("%A")
+            current_time = now_ist.strftime("%H:%M")
 
-        allowed_times = schedule.get("eclipsed_by_you", {}).get(today, [])
+            allowed_times = schedule.get("eclipsed_by_you", {}).get(today, [])
+            self.logger.info(f"Today: {today}, Time: {current_time}, Scheduled: {allowed_times}")
 
-        self.logger.info(f"Today: {today}, Time: {now}, Scheduled: {allowed_times}")
-
-        return now in allowed_times
-    except Exception as e:
-        self.logger.error(f"Schedule check failed: {e}")
-        return True  # fallback: always run if schedule fails
+            return current_time in allowed_times
+        except Exception as e:
+            self.logger.error(f"Schedule check failed: {e}")
+            return True  # fallback
 
     def post_to_instagram(self, file):
         name = file.name
@@ -179,7 +185,7 @@ class DropboxToInstagramUploader:
         for file in files:
             success = self.post_to_instagram(file)
             if success:
-                break  # post only one file
+                break  # only post one file per run
 
 if __name__ == "__main__":
     DropboxToInstagramUploader().run()
