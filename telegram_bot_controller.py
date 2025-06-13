@@ -8,12 +8,13 @@ import requests
 import dropbox
 import base64
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
 from telegram.ext import (
     Updater, CommandHandler, CallbackContext, CallbackQueryHandler,
     MessageHandler, Filters
 )
 from nacl import encoding, public  # for GitHub secret encryption
+import asyncio
 
 # ----------- SETUP LOGGING ----------- #
 logging.basicConfig(
@@ -30,6 +31,9 @@ PAUSED_PATH = os.path.join(SCHEDULER_DIR, "paused.json")
 EXPIRY_PATH = os.path.join(SCHEDULER_DIR, "token_expiry.json")
 RESULTS_PATH = os.path.join(SCHEDULER_DIR, "post_results.json")
 BANNED_PATH = os.path.join(SCHEDULER_DIR, "banned.json")
+MESSAGE_DELETE_DELAY = 1800  # 30 minutes in seconds
+LOG_DIR = "logs"
+LOG_FILE = os.path.join(LOG_DIR, "bot_logs.json")
 
 # ----------- SECURITY SETTINGS ----------- #
 GITHUB_SECRET_NAME = "TELEGRAM_BOT_PASSWORD"
@@ -405,16 +409,24 @@ def handle_account_selection(update: Update, context: CallbackContext):
             [InlineKeyboardButton("⏸️ Pause/Resume", callback_data="pause")],
             [InlineKeyboardButton("📊 Status Summary", callback_data="status")],
             [InlineKeyboardButton("📤 Post Logs", callback_data="post_logs")],
+            [InlineKeyboardButton("📝 View Bot Logs", callback_data="view_logs")],
             [InlineKeyboardButton("♻ Reset Schedule", callback_data="reset")],
             [InlineKeyboardButton("🔙 Back to Accounts", callback_data="back_to_accounts")]
         ]
-        query.message.edit_text(f"Manage: {account}", reply_markup=InlineKeyboardMarkup(buttons))
+        
+        send_self_destructing_message(
+            update,
+            context,
+            f"Manage: {account}",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
     except Exception as e:
         logger.error(f"Error in handle_account_selection: {str(e)}")
-        if update.callback_query:
-            update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
-        else:
-            update.message.reply_text("❌ An error occurred. Please try again.")
+        send_self_destructing_message(
+            update,
+            context,
+            "❌ An error occurred. Please try again."
+        )
 
 def handle_view_schedule(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -449,12 +461,26 @@ def handle_view_day(update: Update, context: CallbackContext):
     
     times = cfg.get(account, {}).get(day, [])
     if times:
-        text = f"📅 {day} Schedule for {account}:\n{', '.join(times)}"
+        text = f"📅 {day} Schedule for {account}:\n"
+        for i, time in enumerate(times, 1):
+            text += f"{i}. {time}\n"
+        
+        buttons = []
+        for i, time in enumerate(times, 1):
+            buttons.append([InlineKeyboardButton(f"Edit {time}", callback_data=f"edit_time:{day}:{time}")])
+        buttons.append([InlineKeyboardButton("Add Time", callback_data=f"add_time:{day}")])
+        buttons.append([InlineKeyboardButton("🔙 Back to Schedule", callback_data="view_schedule")])
+        
+        query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     else:
-        text = f"📅 No posts scheduled for {day}"
-    
-    buttons = [[InlineKeyboardButton("🔙 Back to Schedule", callback_data="view_schedule")]]
-    query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        buttons = [
+            [InlineKeyboardButton("Add Time", callback_data=f"add_time:{day}")],
+            [InlineKeyboardButton("🔙 Back to Schedule", callback_data="view_schedule")]
+        ]
+        query.message.edit_text(
+            f"📅 No posts scheduled for {day}",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
 
 def handle_post_logs(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -612,37 +638,11 @@ def handle_message(update: Update, context: CallbackContext):
     try:
         text = update.message.text
         account = context.user_data.get('account')
-        weekday = context.user_data.get('weekday')
-
-        if context.user_data.get('next_action') == 'post_count':
-            try:
-                count = int(text)
-                if count < 1 or count > 24:
-                    update.message.reply_text("❌ Please enter a number between 1 and 24.")
-                    return
-                context.user_data['post_count'] = count
-                context.user_data['selected_times'] = []
-                update.message.reply_text(
-                    f"Select time slots for {weekday} ({count} posts):",
-                    reply_markup=create_time_button_grid([], count)
-                )
-                context.user_data['next_action'] = 'timeslot'
-            except ValueError:
-                update.message.reply_text("❌ Invalid number. Please enter a number between 1 and 24.")
-
-        elif context.user_data.get('next_action') == 'caption':
-            if not text or len(text.strip()) < 5:
-                update.message.reply_text("❌ Caption too short. Please send a longer caption.")
-                return
-            
-            captions = load_json(CAPTIONS_PATH)
-            captions[account] = text
-            save_json(CAPTIONS_PATH, captions)
-            send_audit_log(context, f"User {update.effective_user.id} updated caption for {account}")
-            update.message.reply_text("✅ Static caption saved.")
-            context.user_data.clear()
-
-        elif context.user_data.get('next_action') == 'update_token':
+        next_action = context.user_data.get('next_action')
+        
+        logger.info(f"[DEBUG] next_action = {next_action}")
+        
+        if next_action == 'awaiting_token':
             secret_name = context.user_data.get('secret_target')
             token_type = context.user_data.get('token_type')
             
@@ -666,7 +666,7 @@ def handle_message(update: Update, context: CallbackContext):
             )
             context.user_data['next_action'] = 'confirming_token'
 
-        elif context.user_data.get('next_action') == 'token_expiry':
+        elif next_action == 'token_expiry':
             try:
                 expiry_date = datetime.strptime(text, "%Y-%m-%d")
                 if expiry_date < datetime.now():
@@ -682,7 +682,35 @@ def handle_message(update: Update, context: CallbackContext):
             except ValueError:
                 update.message.reply_text("❌ Invalid date format. Use YYYY-MM-DD (e.g. 2024-12-31)")
 
-        elif context.user_data.get('next_action') == 'add_user':
+        elif next_action == 'caption':
+            if not text or len(text.strip()) < 5:
+                update.message.reply_text("❌ Caption too short. Please send a longer caption.")
+                return
+                
+            captions = load_json(CAPTIONS_PATH)
+            captions[account] = text
+            save_json(CAPTIONS_PATH, captions)
+            send_audit_log(context, f"User {update.effective_user.id} updated caption for {account}")
+            update.message.reply_text("✅ Static caption saved.")
+            context.user_data.clear()
+
+        elif next_action == 'post_count':
+            try:
+                count = int(text)
+                if count < 1 or count > 24:
+                    update.message.reply_text("❌ Please enter a number between 1 and 24.")
+                    return
+                context.user_data['post_count'] = count
+                context.user_data['selected_times'] = []
+                update.message.reply_text(
+                    f"Select time slots for {weekday} ({count} posts):",
+                    reply_markup=create_time_button_grid([], count)
+                )
+                context.user_data['next_action'] = 'timeslot'
+            except ValueError:
+                update.message.reply_text("❌ Invalid number. Please enter a number between 1 and 24.")
+
+        elif next_action == 'add_user':
             try:
                 new_user_id = int(text)
                 if str(new_user_id) in AUTHORIZED_USERS:
@@ -694,7 +722,7 @@ def handle_message(update: Update, context: CallbackContext):
             except ValueError:
                 update.message.reply_text("❌ Invalid user ID. Please send a numeric ID.")
 
-        elif context.user_data.get('next_action') == 'add_user_password':
+        elif next_action == 'add_user_password':
             new_user_id = context.user_data['new_user_id']
             if add_user(new_user_id, text):
                 send_audit_log(context, f"User {update.effective_user.id} added new user {new_user_id}")
@@ -703,7 +731,7 @@ def handle_message(update: Update, context: CallbackContext):
                 update.message.reply_text("❌ Failed to add user. Please try again.")
             context.user_data.clear()
 
-        elif context.user_data.get('next_action') == 'change_password':
+        elif next_action == 'change_password':
             if change_user_password(update.effective_user.id, text):
                 send_audit_log(context, f"User {update.effective_user.id} changed their password")
                 update.message.reply_text("✅ Password changed successfully.")
@@ -711,7 +739,7 @@ def handle_message(update: Update, context: CallbackContext):
                 update.message.reply_text("❌ Failed to change password. Please try again.")
             context.user_data.clear()
 
-        elif context.user_data.get('next_action') == 'confirming_token':
+        elif next_action == 'confirming_token':
             secret_name = context.user_data.get('secret_target')
             token_type = context.user_data.get('token_type')
             temp_token = context.user_data.get('temp_token')
@@ -766,13 +794,19 @@ def handle_update_token(update: Update, context: CallbackContext):
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
         ]
         
-        update.callback_query.message.edit_text(
+        send_self_destructing_message(
+            update,
+            context,
             f"Which token to update for {account}?",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
     except Exception as e:
         logger.error(f"Error in handle_update_token: {str(e)}")
-        update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
+        send_self_destructing_message(
+            update,
+            context,
+            "❌ An error occurred. Please try again."
+        )
 
 def handle_token_choice(update: Update, context: CallbackContext):
     """Handle token type selection."""
@@ -861,6 +895,51 @@ def handle_token_confirm(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"Error in handle_token_confirm: {str(e)}")
         query.message.edit_text("❌ An error occurred. Please try again.")
+
+def handle_edit_time(update: Update, context: CallbackContext):
+    """Handle editing a specific time slot."""
+    try:
+        query = update.callback_query
+        _, day, time = query.data.split(":")
+        account = context.user_data['account']
+        
+        context.user_data['editing_day'] = day
+        context.user_data['editing_time'] = time
+        context.user_data['next_action'] = 'editing_time'
+        
+        buttons = [
+            [InlineKeyboardButton("🔙 Back", callback_data=f"view_day:{day}")]
+        ]
+        
+        query.message.edit_text(
+            f"Enter new time for {day} (HH:MM format):",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_edit_time: {str(e)}")
+        query.message.reply_text("❌ An error occurred. Please try again.")
+
+def handle_add_time(update: Update, context: CallbackContext):
+    """Handle adding a new time slot."""
+    try:
+        query = update.callback_query
+        day = query.data.split(":")[1]
+        account = context.user_data['account']
+        
+        context.user_data['adding_day'] = day
+        context.user_data['next_action'] = 'adding_time'
+        
+        buttons = [
+            [InlineKeyboardButton("🔙 Back", callback_data=f"view_day:{day}")]
+        ]
+        
+        query.message.edit_text(
+            f"Enter new time for {day} (HH:MM format):",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_add_time: {str(e)}")
+        query.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_pause(update: Update, context: CallbackContext):
     account = context.user_data['account']
@@ -1110,6 +1189,7 @@ def handle_back_to_menu(update: Update, context: CallbackContext):
             [InlineKeyboardButton("⏸️ Pause/Resume", callback_data="pause")],
             [InlineKeyboardButton("📊 Status Summary", callback_data="status")],
             [InlineKeyboardButton("📤 Post Logs", callback_data="post_logs")],
+            [InlineKeyboardButton("📝 View Bot Logs", callback_data="view_logs")],
             [InlineKeyboardButton("♻ Reset Schedule", callback_data="reset")],
             [InlineKeyboardButton("🔙 Back to Accounts", callback_data="back_to_accounts")]
         ]
@@ -1121,6 +1201,124 @@ def handle_back_to_menu(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"Error in handle_back_to_menu: {str(e)}")
         query.message.reply_text("❌ An error occurred. Please try again.")
+
+def ensure_log_file():
+    """Ensure log file exists."""
+    os.makedirs(LOG_DIR, exist_ok=True)
+    if not os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'w') as f:
+            json.dump([], f)
+
+def log_message(message_data):
+    """Log message to file and GitHub."""
+    try:
+        ensure_log_file()
+        with open(LOG_FILE, 'r') as f:
+            logs = json.load(f)
+        
+        logs.append({
+            "timestamp": datetime.now().isoformat(),
+            "message_id": message_data.get("message_id"),
+            "chat_id": message_data.get("chat_id"),
+            "text": message_data.get("text"),
+            "user_id": message_data.get("user_id"),
+            "action": message_data.get("action")
+        })
+        
+        with open(LOG_FILE, 'w') as f:
+            json.dump(logs, f, indent=2)
+            
+        # Push to GitHub
+        push_scheduler_file_to_github("logs/bot_logs.json")
+    except Exception as e:
+        logger.error(f"Error logging message: {str(e)}")
+
+async def delete_message_later(context, chat_id, message_id):
+    """Delete message after delay."""
+    try:
+        await asyncio.sleep(MESSAGE_DELETE_DELAY)
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception as e:
+        logger.error(f"Error deleting message: {str(e)}")
+
+def send_self_destructing_message(update, context, text, reply_markup=None):
+    """Send message that will self-destruct after delay."""
+    try:
+        if update.callback_query:
+            message = update.callback_query.message.edit_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            message = update.message.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+        # Log the message
+        log_message({
+            "message_id": message.message_id,
+            "chat_id": message.chat_id,
+            "text": text,
+            "user_id": update.effective_user.id,
+            "action": "message_sent"
+        })
+        
+        # Schedule deletion
+        asyncio.create_task(delete_message_later(context, message.chat_id, message.message_id))
+        
+        return message
+    except Exception as e:
+        logger.error(f"Error sending self-destructing message: {str(e)}")
+        return None
+
+def handle_view_logs(update: Update, context: CallbackContext):
+    """Handle viewing bot logs."""
+    try:
+        ensure_log_file()
+        with open(LOG_FILE, 'r') as f:
+            logs = json.load(f)
+            
+        if not logs:
+            send_self_destructing_message(
+                update,
+                context,
+                "📝 No logs available."
+            )
+            return
+            
+        # Get last 10 logs
+        recent_logs = logs[-10:]
+        text = "📝 Recent Bot Activity:\n\n"
+        
+        for log in recent_logs:
+            timestamp = datetime.fromisoformat(log["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
+            text += f"🕒 {timestamp}\n"
+            text += f"👤 User: {log['user_id']}\n"
+            text += f"📝 Action: {log['action']}\n"
+            if log.get("text"):
+                text += f"💬 Message: {log['text'][:50]}...\n"
+            text += "➖➖➖➖➖➖➖➖➖➖\n"
+            
+        buttons = [
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
+        ]
+        
+        send_self_destructing_message(
+            update,
+            context,
+            text,
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error viewing logs: {str(e)}")
+        send_self_destructing_message(
+            update,
+            context,
+            "❌ An error occurred while fetching logs."
+        )
 
 # ----------- MAIN ----------- #
 def main():
@@ -1198,10 +1396,14 @@ def main():
     # Navigation handlers
     dp.add_handler(CallbackQueryHandler(handle_back_to_accounts, pattern="^back_to_accounts$"))
     dp.add_handler(CallbackQueryHandler(handle_view_schedule, pattern="^view_schedule$"))
-    dp.add_handler(CallbackQueryHandler(handle_view_day, pattern="^view_day:"))
+    dp.add_handler(CallbackQueryHandler(handle_edit_time, pattern="^edit_time:"))
+    dp.add_handler(CallbackQueryHandler(handle_add_time, pattern="^add_time:"))
     dp.add_handler(CallbackQueryHandler(handle_post_logs, pattern="^post_logs$"))
     dp.add_handler(CallbackQueryHandler(handle_confirm_reset, pattern="^confirm_reset$"))
     dp.add_handler(CallbackQueryHandler(handle_back_to_menu, pattern="^back_to_menu$"))
+    
+    # Add new handler for logs
+    dp.add_handler(CallbackQueryHandler(handle_view_logs, pattern="^view_logs$"))
     
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
