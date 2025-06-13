@@ -115,26 +115,29 @@ class DropboxToInstagramUploader:
             self.logger.info(f"Current IST time: {now_ist.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             
             allowed_times = schedule.get("eclipsed_by_you", {}).get(today, [])
-            for time_str in allowed_times:
-                # Parse the scheduled time in IST
-                scheduled_time = datetime.strptime(time_str, "%H:%M").replace(
-                    year=now_ist.year, month=now_ist.month, day=now_ist.day
-                )
-                scheduled_time = self.ist.localize(scheduled_time)
-                
-                delta = (scheduled_time - now_ist).total_seconds()
-                
-                if 0 <= delta <= 600:  # within 10 minutes
-                    self.logger.info(f"Sleeping {int(delta)} seconds until scheduled post at {scheduled_time.strftime('%H:%M:%S %Z')}")
-                    time.sleep(int(delta))
-                    return True  # proceed with post
-                
-                if -60 <= delta < 0:  # within 1-minute grace period
-                    self.logger.info(f"⏱️ Within 1-minute grace period. Scheduled time was {scheduled_time.strftime('%H:%M:%S %Z')}")
-                    return True  # allow small delay
-            
-            self.logger.info("⏰ Not in schedule window.")
-            return False
+            now_str = now_ist.strftime("%H:%M")
+            match_found = False
+
+            for t in allowed_times:
+                try:
+                    scheduled_dt = datetime.strptime(t, "%H:%M").time()
+                    scheduled_time = now_ist.replace(hour=scheduled_dt.hour, minute=scheduled_dt.minute, second=0, microsecond=0)
+                    delta = int((scheduled_time - now_ist).total_seconds())
+
+                    if -60 <= delta <= 600:  # Accept from 1 min before to 10 min after
+                        if delta > 0:
+                            self.logger.info(f"⏳ Sleeping {delta} seconds for schedule match: {t}")
+                            time.sleep(delta)
+                        match_found = True
+                        break
+                except Exception as e:
+                    self.logger.error(f"⛔ Schedule parse error: {e}")
+
+            if not match_found:
+                self.logger.info("⏰ Not in schedule window.")
+                return False
+
+            return True
             
         except Exception as e:
             self.logger.error(f"Schedule check failed: {e}")
