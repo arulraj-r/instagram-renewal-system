@@ -2,35 +2,51 @@ name: Instagram Scheduler - ECLIPSED_BY_YOU
 
 on:
   schedule:
-    - cron: "*/30 * * * *"  # Every 20 minutes
+    - cron: "*/15 * * * *"  # Every 15 minutes for more precise timing
   workflow_dispatch:
 
 jobs:
   post_ECLIPSED_BY_YOU:
     runs-on: ubuntu-latest
+    timeout-minutes: 14  # Auto-kill if unresponsive (before next cron)
     env:
       IG_ECLIPSED_BY_YOU_TOKEN: ${{ secrets.IG_ECLIPSED_BY_YOU_TOKEN }}
       IG_ECLIPSED_BY_YOU_ID: ${{ secrets.IG_ECLIPSED_BY_YOU_ID }}
       DROPBOX_ECLIPSED_BY_YOU_REFRESH: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_REFRESH }}
       DROPBOX_ECLIPSED_BY_YOU_APP_KEY: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_APP_KEY }}
       DROPBOX_ECLIPSED_BY_YOU_APP_SECRET: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_APP_SECRET }}
+      DROPBOX_ECLIPSED_BY_YOU_TOKEN: ${{ secrets.DROPBOX_ECLIPSED_BY_YOU_TOKEN }}  # Added for token refresh
       GH_PAT: ${{ secrets.GH_PAT }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       GITHUB_REPOSITORY: ${{ github.repository }}
+      MAX_WAIT_SECONDS: "600"  # 10 minutes wait window
 
     steps:
       - name: Checkout
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 1  # Shallow clone for faster checkout
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
+          cache: 'pip'  # Enable pip caching
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install dropbox requests python-telegram-bot==13.15 pynacl pytz
 
       - name: Run ECLIPSED_BY_YOU Posting Script
         run: python eclipsed_by_you_post.py
+        env:
+          PYTHONUNBUFFERED: 1  # Ensure logs are real-time
+        continue-on-error: true  # Don't fail the workflow if script errors
+
+      - name: Check for errors
+        if: failure()
+        run: |
+          echo "Script failed but continuing workflow"
+          exit 0
