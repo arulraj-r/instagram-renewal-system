@@ -767,6 +767,106 @@ def periodic_checks(context: CallbackContext):
         except Exception as e:
             logger.error(f"Error during periodic check for {account}: {e}")
 
+def handle_add_user(update: Update, context: CallbackContext):
+    """Handle /add_user command."""
+    try:
+        # Only allow the first authorized user to add others
+        first_user = next(iter(AUTHORIZED_USERS.keys()))
+        if str(update.effective_user.id) != first_user:
+            update.message.reply_text("❌ Only the admin can add new users.")
+            return
+
+        context.user_data['next_action'] = 'add_user'
+        update.message.reply_text("Please send the new user's ID (numeric):")
+    except Exception as e:
+        logger.error(f"Error in handle_add_user: {str(e)}")
+        update.message.reply_text("❌ An error occurred. Please try again.")
+
+def handle_change_password(update: Update, context: CallbackContext):
+    """Handle /change_password command."""
+    try:
+        context.user_data['next_action'] = 'change_password'
+        update.message.reply_text("Please send your new password:")
+    except Exception as e:
+        logger.error(f"Error in handle_change_password: {str(e)}")
+        update.message.reply_text("❌ An error occurred. Please try again.")
+
+def update_github_secret(secret_name, secret_value):
+    """Update a GitHub secret using the GitHub API."""
+    try:
+        github_token = os.getenv("GH_PAT")
+        repo = os.getenv("GITHUB_REPOSITORY")
+        if not github_token or not repo:
+            logger.error("Missing GitHub credentials")
+            return False
+
+        # Get the public key for encryption
+        url = f"https://api.github.com/repos/{repo}/actions/secrets/public-key"
+        headers = {
+            "Authorization": f"token {github_token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            logger.error(f"Failed to get public key: {response.text}")
+            return False
+            
+        public_key = response.json()
+        
+        # Encrypt the secret
+        box = public.SealedBox(public.PublicKey(public_key["key"].encode()))
+        encrypted_value = base64.b64encode(box.encrypt(secret_value.encode())).decode()
+        
+        # Update the secret
+        url = f"https://api.github.com/repos/{repo}/actions/secrets/{secret_name}"
+        data = {
+            "encrypted_value": encrypted_value,
+            "key_id": public_key["key_id"]
+        }
+        
+        response = requests.put(url, headers=headers, json=data)
+        if response.status_code in [201, 204]:
+            logger.info(f"Successfully updated secret {secret_name}")
+            return True
+        else:
+            logger.error(f"Failed to update secret: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error updating GitHub secret: {str(e)}")
+        return False
+
+def add_user(user_id, password):
+    """Add a new authorized user."""
+    try:
+        AUTHORIZED_USERS[str(user_id)] = True
+        # Update GitHub secret for the new user's password
+        secret_name = f"USER_{user_id}_PASSWORD"
+        success = update_github_secret(secret_name, password)
+        if success:
+            logger.info(f"Added new user {user_id}")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error adding user {user_id}: {e}")
+        return False
+
+def change_user_password(user_id, new_password):
+    """Change an existing user's password."""
+    try:
+        if str(user_id) not in AUTHORIZED_USERS:
+            return False
+        secret_name = f"USER_{user_id}_PASSWORD"
+        success = update_github_secret(secret_name, new_password)
+        if success:
+            logger.info(f"Changed password for user {user_id}")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error changing password for user {user_id}: {e}")
+        return False
+
 # ----------- MAIN ----------- #
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
