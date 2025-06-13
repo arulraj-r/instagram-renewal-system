@@ -608,107 +608,113 @@ def handle_time_selection(update: Update, context: CallbackContext):
         query.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_message(update: Update, context: CallbackContext):
-    text = update.message.text
-    account = context.user_data.get('account')
-    weekday = context.user_data.get('weekday')
+    """Handle incoming messages."""
+    try:
+        text = update.message.text
+        account = context.user_data.get('account')
+        weekday = context.user_data.get('weekday')
 
-    if context.user_data.get('next_action') == 'post_count':
-        try:
-            count = int(text)
-            if count < 1 or count > 24:
-                update.message.reply_text("❌ Please enter a number between 1 and 24.")
+        if context.user_data.get('next_action') == 'post_count':
+            try:
+                count = int(text)
+                if count < 1 or count > 24:
+                    update.message.reply_text("❌ Please enter a number between 1 and 24.")
+                    return
+                context.user_data['post_count'] = count
+                context.user_data['selected_times'] = []
+                update.message.reply_text(
+                    f"Select time slots for {weekday} ({count} posts):",
+                    reply_markup=create_time_button_grid([], count)
+                )
+                context.user_data['next_action'] = 'timeslot'
+            except ValueError:
+                update.message.reply_text("❌ Invalid number. Please enter a number between 1 and 24.")
+
+        elif context.user_data.get('next_action') == 'caption':
+            if not text or len(text.strip()) < 5:
+                update.message.reply_text("❌ Caption too short. Please send a longer caption.")
                 return
-            context.user_data['post_count'] = count
-            context.user_data['selected_times'] = []
-            update.message.reply_text(
-                f"Select time slots for {weekday} ({count} posts):",
-                reply_markup=create_time_button_grid([], count)
-            )
-            context.user_data['next_action'] = 'timeslot'
-        except ValueError:
-            update.message.reply_text("❌ Invalid number. Please enter a number between 1 and 24.")
-
-    elif context.user_data.get('next_action') == 'caption':
-        if not text or len(text.strip()) < 5:
-            update.message.reply_text("❌ Caption too short. Please send a longer caption.")
-            return
             
-        captions = load_json(CAPTIONS_PATH)
-        captions[account] = text
-        save_json(CAPTIONS_PATH, captions)
-        send_audit_log(context, f"User {update.effective_user.id} updated caption for {account}")
-        update.message.reply_text("✅ Static caption saved.")
-        context.user_data.clear()
-
-    elif context.user_data.get('next_action') == 'update_token':
-        secret_name = context.user_data.get('secret_target')
-        token_type = context.user_data.get('token_type')
-        
-        if not text or len(text.strip()) < 10:
-            update.message.reply_text("❌ Invalid token. Please send a valid token.")
-            return
-            
-        # Log the attempt
-        logger.info(f"Attempting to update {token_type} token for {account}")
-        
-        success = update_github_secret(secret_name, text)
-        if success:
-            update.message.reply_text(
-                f"✅ {token_type} token updated successfully.\n"
-                "Now enter expiry date (YYYY-MM-DD):"
-            )
-            context.user_data['next_action'] = 'token_expiry'
-        else:
-            update.message.reply_text(
-                f"❌ Failed to update {token_type} token.\n"
-                "Please check the logs and try again."
-            )
+            captions = load_json(CAPTIONS_PATH)
+            captions[account] = text
+            save_json(CAPTIONS_PATH, captions)
+            send_audit_log(context, f"User {update.effective_user.id} updated caption for {account}")
+            update.message.reply_text("✅ Static caption saved.")
             context.user_data.clear()
 
-    elif context.user_data.get('next_action') == 'token_expiry':
-        try:
-            expiry_date = datetime.strptime(text, "%Y-%m-%d")
-            if expiry_date < datetime.now():
-                update.message.reply_text("❌ Expiry date cannot be in the past. Try again:")
+        elif context.user_data.get('next_action') == 'update_token':
+            secret_name = context.user_data.get('secret_target')
+            token_type = context.user_data.get('token_type')
+            
+            if not text or len(text.strip()) < 10:
+                update.message.reply_text("❌ Invalid token. Please send a valid token.")
                 return
                 
-            update_token_expiry(account, text)
-            update.message.reply_text(
-                "✅ Token expiry date saved.\n"
-                f"Token will expire on {text}"
-            )
+            # Log the attempt
+            logger.info(f"Attempting to update {token_type} for {account}")
+            
+            success = update_github_secret(secret_name, text)
+            if success:
+                update.message.reply_text(
+                    f"✅ {token_type} updated successfully.\n"
+                    "Now enter expiry date (YYYY-MM-DD):"
+                )
+                context.user_data['next_action'] = 'token_expiry'
+            else:
+                update.message.reply_text(
+                    f"❌ Failed to update {token_type}.\n"
+                    "Please check the logs and try again."
+                )
+                context.user_data.clear()
+
+        elif context.user_data.get('next_action') == 'token_expiry':
+            try:
+                expiry_date = datetime.strptime(text, "%Y-%m-%d")
+                if expiry_date < datetime.now():
+                    update.message.reply_text("❌ Expiry date cannot be in the past. Try again:")
+                    return
+                
+                update_token_expiry(account, text)
+                update.message.reply_text(
+                    "✅ Token expiry date saved.\n"
+                    f"Token will expire on {text}"
+                )
+                context.user_data.clear()
+            except ValueError:
+                update.message.reply_text("❌ Invalid date format. Use YYYY-MM-DD (e.g. 2024-12-31)")
+
+        elif context.user_data.get('next_action') == 'add_user':
+            try:
+                new_user_id = int(text)
+                if str(new_user_id) in AUTHORIZED_USERS:
+                    update.message.reply_text("❌ This user already exists.")
+                    return
+                context.user_data['new_user_id'] = new_user_id
+                context.user_data['next_action'] = 'add_user_password'
+                update.message.reply_text("Please send the new user's password:")
+            except ValueError:
+                update.message.reply_text("❌ Invalid user ID. Please send a numeric ID.")
+
+        elif context.user_data.get('next_action') == 'add_user_password':
+            new_user_id = context.user_data['new_user_id']
+            if add_user(new_user_id, text):
+                send_audit_log(context, f"User {update.effective_user.id} added new user {new_user_id}")
+                update.message.reply_text(f"✅ User {new_user_id} added successfully.")
+            else:
+                update.message.reply_text("❌ Failed to add user. Please try again.")
             context.user_data.clear()
-        except ValueError:
-            update.message.reply_text("❌ Invalid date format. Use YYYY-MM-DD (e.g. 2024-12-31)")
 
-    elif context.user_data.get('next_action') == 'add_user':
-        try:
-            new_user_id = int(text)
-            if str(new_user_id) in AUTHORIZED_USERS:
-                update.message.reply_text("❌ This user already exists.")
-                return
-            context.user_data['new_user_id'] = new_user_id
-            context.user_data['next_action'] = 'add_user_password'
-            update.message.reply_text("Please send the new user's password:")
-        except ValueError:
-            update.message.reply_text("❌ Invalid user ID. Please send a numeric ID.")
+        elif context.user_data.get('next_action') == 'change_password':
+            if change_user_password(update.effective_user.id, text):
+                send_audit_log(context, f"User {update.effective_user.id} changed their password")
+                update.message.reply_text("✅ Password changed successfully.")
+            else:
+                update.message.reply_text("❌ Failed to change password. Please try again.")
+            context.user_data.clear()
 
-    elif context.user_data.get('next_action') == 'add_user_password':
-        new_user_id = context.user_data['new_user_id']
-        if add_user(new_user_id, text):
-            send_audit_log(context, f"User {update.effective_user.id} added new user {new_user_id}")
-            update.message.reply_text(f"✅ User {new_user_id} added successfully.")
-        else:
-            update.message.reply_text("❌ Failed to add user. Please try again.")
-        context.user_data.clear()
-
-    elif context.user_data.get('next_action') == 'change_password':
-        if change_user_password(update.effective_user.id, text):
-            send_audit_log(context, f"User {update.effective_user.id} changed their password")
-            update.message.reply_text("✅ Password changed successfully.")
-        else:
-            update.message.reply_text("❌ Failed to change password. Please try again.")
-        context.user_data.clear()
+    except Exception as e:
+        logger.error(f"Error in handle_message: {str(e)}")
+        update.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_caption(update: Update, context: CallbackContext):
     try:
@@ -721,14 +727,23 @@ def handle_caption(update: Update, context: CallbackContext):
         update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_update_token(update: Update, context: CallbackContext):
+    """Handle token update selection."""
     try:
         account = context.user_data['account']
         send_audit_log(context, f"User {update.effective_user.id} started updating token for {account}")
+        
         buttons = [
             [InlineKeyboardButton("Instagram Token", callback_data="token:IG")],
-            [InlineKeyboardButton("Dropbox Token", callback_data="token:DB")]
+            [InlineKeyboardButton("Dropbox App Key", callback_data="token:DB_APP_KEY")],
+            [InlineKeyboardButton("Dropbox App Secret", callback_data="token:DB_APP_SECRET")],
+            [InlineKeyboardButton("Dropbox Refresh Token", callback_data="token:DB_REFRESH")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
         ]
-        update.callback_query.message.reply_text("Which token to update?", reply_markup=InlineKeyboardMarkup(buttons))
+        
+        update.callback_query.message.edit_text(
+            f"Which token to update for {account}?",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
     except Exception as e:
         logger.error(f"Error in handle_update_token: {str(e)}")
         update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
@@ -736,34 +751,54 @@ def handle_update_token(update: Update, context: CallbackContext):
 def handle_token_choice(update: Update, context: CallbackContext):
     """Handle token type selection."""
     try:
-        token_type = update.callback_query.data.split(":")[1]
+        query = update.callback_query
+        token_type = query.data.split(":")[1]
         account = context.user_data.get('account')
         
-        if token_type == "IG":
-            secret_name = f"IG_{account.upper()}_TOKEN"
-            token_type_display = "Instagram"
-        else:
-            secret_name = f"DROPBOX_{account.upper()}_TOKEN"
-            token_type_display = "Dropbox"
+        # Map token types to their secret names
+        token_mapping = {
+            "IG": {
+                "secret": f"IG_{account.upper()}_TOKEN",
+                "display": "Instagram"
+            },
+            "DB_APP_KEY": {
+                "secret": f"DROPBOX_{account.upper()}_APP_KEY",
+                "display": "Dropbox App Key"
+            },
+            "DB_APP_SECRET": {
+                "secret": f"DROPBOX_{account.upper()}_APP_SECRET",
+                "display": "Dropbox App Secret"
+            },
+            "DB_REFRESH": {
+                "secret": f"DROPBOX_{account.upper()}_REFRESH",
+                "display": "Dropbox Refresh Token"
+            }
+        }
         
-        context.user_data['secret_target'] = secret_name
-        context.user_data['token_type'] = token_type_display
+        if token_type not in token_mapping:
+            logger.error(f"Invalid token type: {token_type}")
+            query.message.reply_text("❌ Invalid token type selected.")
+            return
+            
+        token_info = token_mapping[token_type]
+        context.user_data['secret_target'] = token_info["secret"]
+        context.user_data['token_type'] = token_info["display"]
         context.user_data['next_action'] = 'update_token'
         
         buttons = [
             [InlineKeyboardButton("✅ Continue", callback_data="token:continue")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
+            [InlineKeyboardButton("🔙 Back", callback_data="update_token")]
         ]
         
-        update.callback_query.message.edit_text(
-            f"⚠️ You are about to update the {token_type_display} token for {account}.\n\n"
-            f"This will update the GitHub secret: {secret_name}\n\n"
+        query.message.edit_text(
+            f"⚠️ You are about to update the {token_info['display']} for {account}.\n\n"
+            f"This will update the GitHub secret: {token_info['secret']}\n\n"
             "Do you want to continue?",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
     except Exception as e:
         logger.error(f"Error in handle_token_choice: {str(e)}")
-        update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
+        query.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_token_continue(update: Update, context: CallbackContext):
     """Handle token update continuation."""
@@ -773,11 +808,11 @@ def handle_token_continue(update: Update, context: CallbackContext):
         token_type = context.user_data.get('token_type')
         
         buttons = [
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
+            [InlineKeyboardButton("🔙 Back", callback_data="update_token")]
         ]
         
         query.message.edit_text(
-            f"Please send the new {token_type} token value.\n\n"
+            f"Please send the new {token_type} value.\n\n"
             f"⚠️ This will update: {secret_name}",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -1019,6 +1054,32 @@ def change_user_password(user_id, new_password):
         logger.error(f"Error changing password for user {user_id}: {e}")
         return False
 
+def handle_back_to_menu(update: Update, context: CallbackContext):
+    """Handle back to menu navigation."""
+    try:
+        query = update.callback_query
+        account = context.user_data.get('account')
+        
+        buttons = [
+            [InlineKeyboardButton("📆 Schedule Posts", callback_data="schedule")],
+            [InlineKeyboardButton("📋 View Schedule", callback_data="view_schedule")],
+            [InlineKeyboardButton("✏️ Set Static Caption", callback_data="caption")],
+            [InlineKeyboardButton("🔑 Update API Key", callback_data="update_token")],
+            [InlineKeyboardButton("⏸️ Pause/Resume", callback_data="pause")],
+            [InlineKeyboardButton("📊 Status Summary", callback_data="status")],
+            [InlineKeyboardButton("📤 Post Logs", callback_data="post_logs")],
+            [InlineKeyboardButton("♻ Reset Schedule", callback_data="reset")],
+            [InlineKeyboardButton("🔙 Back to Accounts", callback_data="back_to_accounts")]
+        ]
+        
+        query.message.edit_text(
+            f"Manage: {account}",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_back_to_menu: {str(e)}")
+        query.message.reply_text("❌ An error occurred. Please try again.")
+
 # ----------- MAIN ----------- #
 def main():
     """Main function with environment variable validation."""
@@ -1098,7 +1159,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(handle_view_day, pattern="^view_day:"))
     dp.add_handler(CallbackQueryHandler(handle_post_logs, pattern="^post_logs$"))
     dp.add_handler(CallbackQueryHandler(handle_confirm_reset, pattern="^confirm_reset$"))
-    dp.add_handler(CallbackQueryHandler(handle_account_selection, pattern="^back_to_menu$"))
+    dp.add_handler(CallbackQueryHandler(handle_back_to_menu, pattern="^back_to_menu$"))
     
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
