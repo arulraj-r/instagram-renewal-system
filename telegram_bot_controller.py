@@ -133,25 +133,40 @@ def require_auth(func):
 
 # ----------- DROPBOX HELPERS ----------- #
 def get_dropbox_access_token(account):
+    """Get Dropbox access token with better error handling."""
     app_key = os.getenv(f"DROPBOX_{account.upper()}_APP_KEY")
     app_secret = os.getenv(f"DROPBOX_{account.upper()}_APP_SECRET")
     refresh_token = os.getenv(f"DROPBOX_{account.upper()}_REFRESH")
 
-    if not app_key or not app_secret or not refresh_token:
-        logger.error(f"Missing Dropbox credentials for {account}")
+    missing_creds = []
+    if not app_key:
+        missing_creds.append("APP_KEY")
+    if not app_secret:
+        missing_creds.append("APP_SECRET")
+    if not refresh_token:
+        missing_creds.append("REFRESH_TOKEN")
+
+    if missing_creds:
+        logger.error(f"Missing Dropbox credentials for {account}: {', '.join(missing_creds)}")
         return None
 
     try:
-        response = requests.post("https://api.dropbox.com/oauth2/token", data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": app_key,
-            "client_secret": app_secret
-        })
+        response = requests.post(
+            "https://api.dropbox.com/oauth2/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": app_key,
+                "client_secret": app_secret
+            }
+        )
         response.raise_for_status()
         return response.json().get("access_token")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Dropbox token refresh error for {account}: {str(e)}")
+        return None
     except Exception as e:
-        logger.error(f"Dropbox token refresh error for {account}: {e}")
+        logger.error(f"Unexpected error getting Dropbox token for {account}: {str(e)}")
         return None
 
 def get_dropbox_client(account):
@@ -516,17 +531,22 @@ def handle_message(update: Update, context: CallbackContext):
             context.user_data['post_count'] = count
             context.user_data['selected_times'] = []
             update.message.reply_text(
-                "Select time slots (15-minute intervals):",
+                f"Select time slots for {weekday} ({count} posts):",
                 reply_markup=create_time_button_grid([], count)
             )
             context.user_data['next_action'] = 'timeslot'
-        except:
-            update.message.reply_text("❌ Invalid number. Try again:")
+        except ValueError:
+            update.message.reply_text("❌ Invalid number. Please enter a number between 1 and 24.")
 
     elif context.user_data.get('next_action') == 'caption':
+        if not text or len(text.strip()) < 5:
+            update.message.reply_text("❌ Caption too short. Please send a longer caption.")
+            return
+            
         captions = load_json(CAPTIONS_PATH)
         captions[account] = text
         save_json(CAPTIONS_PATH, captions)
+        send_audit_log(context, f"User {update.effective_user.id} updated caption for {account}")
         update.message.reply_text("✅ Static caption saved.")
         context.user_data.clear()
 
@@ -534,6 +554,10 @@ def handle_message(update: Update, context: CallbackContext):
         secret_name = context.user_data.get('secret_target')
         token_type = context.user_data.get('token_type')
         
+        if not text or len(text.strip()) < 10:
+            update.message.reply_text("❌ Invalid token. Please send a valid token.")
+            return
+            
         # Log the attempt
         logger.info(f"Attempting to update {token_type} token for {account}")
         
@@ -549,7 +573,7 @@ def handle_message(update: Update, context: CallbackContext):
                 f"❌ Failed to update {token_type} token.\n"
                 "Please check the logs and try again."
             )
-        context.user_data.clear()
+            context.user_data.clear()
 
     elif context.user_data.get('next_action') == 'token_expiry':
         try:
@@ -665,59 +689,78 @@ def handle_pause(update: Update, context: CallbackContext):
     update.callback_query.message.reply_text(f"{account} is now {state}")
 
 def handle_status(update: Update, context: CallbackContext):
-    account = context.user_data['account']
-    cfg = load_json(CONFIG_PATH)
-    exp = load_json(EXPIRY_PATH)
-    caption = load_json(CAPTIONS_PATH)
-    paused = load_json(PAUSED_PATH)
-    results = load_json(RESULTS_PATH)
+    """Show detailed status for an account."""
+    try:
+        account = context.user_data['account']
+        cfg = load_json(CONFIG_PATH)
+        exp = load_json(EXPIRY_PATH)
+        caption = load_json(CAPTIONS_PATH)
+        paused = load_json(PAUSED_PATH)
+        results = load_json(RESULTS_PATH)
 
-    # Get Dropbox file count with detailed logging
-    remaining_files = get_remaining_files(account)
-    logger.info(f"Status check for {account}: {remaining_files} files found")
-    
-    # Get next scheduled post time
-    now = datetime.now()
-    today = now.strftime("%A")
-    next_post = None
-    
-    if today in cfg.get(account, {}):
-        times = cfg[account][today]
-        for time in times:
-            post_time = datetime.strptime(time, "%H:%M").time()
-            if post_time > now.time():
-                next_post = time
-                break
-    
-    if not next_post and today != "Sunday":
-        tomorrow = (now + timedelta(days=1)).strftime("%A")
-        if tomorrow in cfg.get(account, {}):
-            next_post = f"Tomorrow at {cfg[account][tomorrow][0]}"
+        # Get Dropbox file count with detailed logging
+        remaining_files = get_remaining_files(account)
+        logger.info(f"Status check for {account}: {remaining_files} files found")
+        
+        # Get next scheduled post time
+        now = datetime.now()
+        today = now.strftime("%A")
+        next_post = None
+        
+        if today in cfg.get(account, {}):
+            times = cfg[account][today]
+            for time in times:
+                post_time = datetime.strptime(time, "%H:%M").time()
+                if post_time > now.time():
+                    next_post = time
+                    break
+        
+        if not next_post and today != "Sunday":
+            tomorrow = (now + timedelta(days=1)).strftime("%A")
+            if tomorrow in cfg.get(account, {}):
+                next_post = f"Tomorrow at {cfg[account][tomorrow][0]}"
 
-    status = f"📊 *Status for {account}*\n\n"
-    status += f"📦 Dropbox Files: {remaining_files}\n"
-    status += f"⏸️ Paused: {'✅ Yes' if paused.get(account) else '❌ No'}\n"
-    status += f"📝 Caption: {caption.get(account, 'None')}\n"
-    status += f"🔑 Token expires: {exp.get(account, 'Unknown')}\n"
-    
-    if next_post:
-        status += f"⏰ Next post: {next_post}\n"
-    
-    if account in results:
-        last_post = results[account]
-        status += f"\n📤 Last Post:\n"
-        status += f"Time: {last_post['last_post']}\n"
-        status += f"File: {last_post['filename']}\n"
-        status += f"Status: {'✅ Success' if last_post['success'] else '❌ Failed'}\n"
-        if not last_post['success'] and last_post.get('error'):
-            status += f"Error: {last_post['error']}\n"
-    
-    status += "\n📅 Schedule:\n"
-    schedule = cfg.get(account, {})
-    for day, times in schedule.items():
-        status += f"{day}: {', '.join(times)}\n"
+        status = f"📊 *Status for {account}*\n\n"
+        status += f"📦 Dropbox Files: {remaining_files}\n"
+        status += f"⏸️ Paused: {'✅ Yes' if paused.get(account) else '❌ No'}\n"
+        
+        # Show caption preview (first 50 chars)
+        current_caption = caption.get(account, 'None')
+        if current_caption != 'None':
+            status += f"📝 Caption: {current_caption[:50]}...\n"
+        else:
+            status += f"📝 Caption: None\n"
+            
+        status += f"🔑 Token expires: {exp.get(account, 'Unknown')}\n"
+        
+        if next_post:
+            status += f"⏰ Next post: {next_post}\n"
+        
+        if account in results:
+            last_post = results[account]
+            status += f"\n📤 Last Post:\n"
+            status += f"Time: {last_post['last_post']}\n"
+            status += f"File: {last_post['filename']}\n"
+            status += f"Status: {'✅ Success' if last_post['success'] else '❌ Failed'}\n"
+            if not last_post['success'] and last_post.get('error'):
+                status += f"Error: {last_post['error']}\n"
+        
+        status += "\n📅 Schedule:\n"
+        schedule = cfg.get(account, {})
+        for day, times in schedule.items():
+            if times:
+                status += f"{day}: {', '.join(times)}\n"
+            else:
+                status += f"{day}: No posts\n"
 
-    update.callback_query.message.edit_text(status, parse_mode='Markdown')
+        # Add Dropbox credentials status
+        dbx_status = "✅" if get_dropbox_access_token(account) else "❌"
+        status += f"\n📦 Dropbox Connection: {dbx_status}"
+
+        update.callback_query.message.edit_text(status, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in handle_status: {str(e)}")
+        update.callback_query.message.reply_text("❌ An error occurred while getting status.")
 
 # ----------- TIME SLOT HELPERS ----------- #
 def generate_time_slots():
