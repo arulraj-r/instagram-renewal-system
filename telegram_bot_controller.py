@@ -642,45 +642,50 @@ def handle_message(update: Update, context: CallbackContext):
         
         logger.info(f"[DEBUG] next_action = {next_action}")
         
-        if next_action == 'awaiting_token':
+        if next_action == 'update_token':
             secret_name = context.user_data.get('secret_target')
             token_type = context.user_data.get('token_type')
+            token_value = text.strip()
             
-            if not text or len(text.strip()) < 10:
+            if not token_value or len(token_value) < 10:
                 update.message.reply_text("❌ Invalid token. Please send a valid token.")
                 return
-                
-            # Store the token temporarily
-            context.user_data['temp_token'] = text
             
-            # Ask for confirmation
-            buttons = [
-                [InlineKeyboardButton("✅ Yes, Update Token", callback_data="token:confirm")],
-                [InlineKeyboardButton("❌ No, Cancel", callback_data="update_token")]
-            ]
+            logger.info(f"[TOKEN UPDATE] Updating {secret_name}...")
+            send_audit_log(context, f"User {update.effective_user.id} attempting to update {token_type} for {account}")
             
-            update.message.reply_text(
-                f"⚠️ Are you sure you want to update the {token_type}?\n"
-                f"This will update: {secret_name}",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
-            context.user_data['next_action'] = 'confirming_token'
+            if update_github_secret(secret_name, token_value):
+                update.message.reply_text(
+                    f"✅ {token_type} token updated successfully.\n\n"
+                    "📅 Now enter the *expiry date* (format: YYYY-MM-DD):",
+                    parse_mode="Markdown"
+                )
+                context.user_data['next_action'] = 'token_expiry'
+                send_audit_log(context, f"User {update.effective_user.id} successfully updated {token_type} for {account}")
+            else:
+                update.message.reply_text(
+                    "❌ Failed to update the token. Please try again or check your GitHub access."
+                )
+                context.user_data.clear()
+                send_audit_log(context, f"User {update.effective_user.id} failed to update {token_type} for {account}")
 
         elif next_action == 'token_expiry':
             try:
-                expiry_date = datetime.strptime(text, "%Y-%m-%d")
+                expiry_date = datetime.strptime(text.strip(), "%Y-%m-%d")
                 if expiry_date < datetime.now():
-                    update.message.reply_text("❌ Expiry date cannot be in the past. Try again:")
+                    update.message.reply_text("⚠️ Expiry date can't be in the past. Try again:")
                     return
                     
-                update_token_expiry(account, text)
+                update_token_expiry(account, expiry_date.strftime("%Y-%m-%d"))
                 update.message.reply_text(
-                    "✅ Token expiry date saved.\n"
-                    f"Token will expire on {text}"
+                    "✅ Token expiry date saved and linked to token.\n"
+                    f"Token will expire on {expiry_date.strftime('%Y-%m-%d')}"
                 )
+                logger.info(f"[TOKEN EXPIRY] Set expiry for {account} to {expiry_date}")
+                send_audit_log(context, f"User {update.effective_user.id} set token expiry for {account} to {expiry_date}")
                 context.user_data.clear()
             except ValueError:
-                update.message.reply_text("❌ Invalid date format. Use YYYY-MM-DD (e.g. 2024-12-31)")
+                update.message.reply_text("❌ Invalid date format. Use YYYY-MM-DD (e.g. 2025-12-31).")
 
         elif next_action == 'caption':
             if not text or len(text.strip()) < 5:
@@ -739,33 +744,6 @@ def handle_message(update: Update, context: CallbackContext):
                 update.message.reply_text("❌ Failed to change password. Please try again.")
             context.user_data.clear()
 
-        elif next_action == 'confirming_token':
-            secret_name = context.user_data.get('secret_target')
-            token_type = context.user_data.get('token_type')
-            temp_token = context.user_data.get('temp_token')
-            
-            if not temp_token:
-                update.message.reply_text("❌ Token data lost. Please try again.")
-                context.user_data.clear()
-                return
-            
-            # Log the attempt
-            logger.info(f"Attempting to update {token_type} for {context.user_data.get('account')}")
-            
-            success = update_github_secret(secret_name, temp_token)
-            if success:
-                update.message.reply_text(
-                    f"✅ {token_type} updated successfully.\n"
-                    "Now enter expiry date (YYYY-MM-DD):"
-                )
-                context.user_data['next_action'] = 'token_expiry'
-            else:
-                update.message.reply_text(
-                    f"❌ Failed to update {token_type}.\n"
-                    "Please check the logs and try again."
-                )
-                context.user_data.clear()
-
     except Exception as e:
         logger.error(f"Error in handle_message: {str(e)}")
         update.message.reply_text("❌ An error occurred. Please try again.")
@@ -820,22 +798,22 @@ def handle_token_choice(update: Update, context: CallbackContext):
             "IG": {
                 "secret": f"IG_{account.upper()}_TOKEN",
                 "display": "Instagram",
-                "prompt": "Please send your Instagram token:"
+                "prompt": "📥 Please send your new *Instagram* token now.\n\n"
             },
             "DB_APP_KEY": {
                 "secret": f"DROPBOX_{account.upper()}_APP_KEY",
                 "display": "Dropbox App Key",
-                "prompt": "Please send your Dropbox App Key:"
+                "prompt": "📥 Please send your new *Dropbox App Key* now.\n\n"
             },
             "DB_APP_SECRET": {
                 "secret": f"DROPBOX_{account.upper()}_APP_SECRET",
                 "display": "Dropbox App Secret",
-                "prompt": "Please send your Dropbox App Secret:"
+                "prompt": "📥 Please send your new *Dropbox App Secret* now.\n\n"
             },
             "DB_REFRESH": {
                 "secret": f"DROPBOX_{account.upper()}_REFRESH",
                 "display": "Dropbox Refresh Token",
-                "prompt": "Please send your Dropbox Refresh Token:"
+                "prompt": "📥 Please send your new *Dropbox Refresh Token* now.\n\n"
             }
         }
         
@@ -847,17 +825,23 @@ def handle_token_choice(update: Update, context: CallbackContext):
         token_info = token_mapping[token_type]
         context.user_data['secret_target'] = token_info["secret"]
         context.user_data['token_type'] = token_info["display"]
-        context.user_data['next_action'] = 'awaiting_token'
+        context.user_data['next_action'] = 'update_token'
         
         buttons = [
             [InlineKeyboardButton("🔙 Back", callback_data="update_token")]
         ]
         
         query.message.edit_text(
-            f"{token_info['prompt']}\n\n"
-            f"⚠️ This will update: {token_info['secret']}",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            f"{token_info['prompt']}"
+            f"⚠️ This will update GitHub Secret: `{token_info['secret']}`",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown"
         )
+        
+        # Log the action
+        logger.info(f"User {update.effective_user.id} started updating {token_info['display']} for {account}")
+        send_audit_log(context, f"User {update.effective_user.id} started updating {token_info['display']} for {account}")
+        
     except Exception as e:
         logger.error(f"Error in handle_token_choice: {str(e)}")
         query.message.reply_text("❌ An error occurred. Please try again.")
@@ -1102,47 +1086,51 @@ def handle_change_password(update: Update, context: CallbackContext):
 def update_github_secret(secret_name, secret_value):
     """Update a GitHub secret using the GitHub API."""
     try:
-        github_token = os.getenv("GH_PAT")
         repo = os.getenv("GITHUB_REPOSITORY")
-        if not github_token or not repo:
-            logger.error("Missing GitHub credentials")
-            return False
-
-        # Get the public key for encryption
-        url = f"https://api.github.com/repos/{repo}/actions/secrets/public-key"
+        token = os.getenv("GH_PAT")
         headers = {
-            "Authorization": f"token {github_token}",
-            "Accept": "application/vnd.github.v3+json"
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json"
         }
+
+        # Get the public key
+        key_url = f"https://api.github.com/repos/{repo}/actions/secrets/public-key"
+        key_res = requests.get(key_url, headers=headers)
         
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            logger.error(f"Failed to get public key: {response.text}")
+        if key_res.status_code != 200:
+            logger.error(f"Failed to get public key: {key_res.text}")
             return False
             
-        public_key = response.json()
-        
+        key_data = key_res.json()
+        key_id = key_data.get("key_id")
+        key = key_data.get("key")
+
+        if not key_id or not key:
+            logger.error("GitHub public key missing")
+            return False
+
         # Encrypt the secret
-        box = public.SealedBox(public.PublicKey(public_key["key"].encode()))
-        encrypted_value = base64.b64encode(box.encrypt(secret_value.encode())).decode()
-        
+        pub_key = public.PublicKey(key.encode(), encoding.Base64Encoder())
+        sealed_box = public.SealedBox(pub_key)
+        encrypted = sealed_box.encrypt(secret_value.encode())
+        encrypted_value = encoding.Base64Encoder().encode(encrypted).decode()
+
         # Update the secret
-        url = f"https://api.github.com/repos/{repo}/actions/secrets/{secret_name}"
-        data = {
+        update_url = f"https://api.github.com/repos/{repo}/actions/secrets/{secret_name}"
+        res = requests.put(update_url, headers=headers, json={
             "encrypted_value": encrypted_value,
-            "key_id": public_key["key_id"]
-        }
-        
-        response = requests.put(url, headers=headers, json=data)
-        if response.status_code in [201, 204]:
+            "key_id": key_id
+        })
+
+        if res.status_code in [201, 204]:
             logger.info(f"Successfully updated secret {secret_name}")
             return True
         else:
-            logger.error(f"Failed to update secret: {response.text}")
+            logger.error(f"Failed to update secret {secret_name}: {res.text}")
             return False
             
     except Exception as e:
-        logger.error(f"Error updating GitHub secret: {str(e)}")
+        logger.error(f"GitHub secret update failed: {e}")
         return False
 
 def add_user(user_id, password):
