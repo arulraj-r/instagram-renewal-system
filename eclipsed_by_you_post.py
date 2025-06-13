@@ -94,17 +94,23 @@ class DropboxToInstagramUploader:
         return [f for f in files if f.name.lower().endswith(valid_exts)]
 
     def is_scheduled_time(self):
-        try:
-            with open("scheduler/config.json", "r") as f:
-                schedule = json.load(f)
-            today = datetime.utcnow().strftime("%A")
-            now = datetime.utcnow().strftime("%H:%M")
+    try:
+        with open("scheduler/config.json", "r") as f:
+            schedule = json.load(f)
 
-            allowed_times = schedule.get("eclipsed_by_you", {}).get(today, [])
-            return now in allowed_times
-        except Exception as e:
-            self.logger.error(f"Schedule check failed: {e}")
-            return True  # fallback: always run if schedule fails
+        IST = timezone("Asia/Kolkata")
+        now_ist = datetime.now(utc).astimezone(IST)
+        today = now_ist.strftime("%A")
+        now = now_ist.strftime("%H:%M")
+
+        allowed_times = schedule.get("eclipsed_by_you", {}).get(today, [])
+
+        self.logger.info(f"Today: {today}, Time: {now}, Scheduled: {allowed_times}")
+
+        return now in allowed_times
+    except Exception as e:
+        self.logger.error(f"Schedule check failed: {e}")
+        return True  # fallback: always run if schedule fails
 
     def post_to_instagram(self, file):
         name = file.name
