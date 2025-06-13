@@ -133,10 +133,19 @@ def require_auth(func):
 
 # ----------- DROPBOX HELPERS ----------- #
 def get_dropbox_access_token(account):
-    """Get Dropbox access token with better error handling."""
-    app_key = os.getenv(f"DROPBOX_{account.upper()}_APP_KEY")
-    app_secret = os.getenv(f"DROPBOX_{account.upper()}_APP_SECRET")
-    refresh_token = os.getenv(f"DROPBOX_{account.upper()}_REFRESH")
+    """Get Dropbox access token with better error handling and debug logging."""
+    # Normalize account name for environment variables
+    env_account = account.replace('-', '_').upper()
+    
+    app_key = os.getenv(f"DROPBOX_{env_account}_APP_KEY")
+    app_secret = os.getenv(f"DROPBOX_{env_account}_APP_SECRET")
+    refresh_token = os.getenv(f"DROPBOX_{env_account}_REFRESH")
+
+    # Debug logging
+    logger.info(f"Checking Dropbox credentials for {account} (env: {env_account})")
+    logger.debug(f"APP_KEY exists: {bool(app_key)}")
+    logger.debug(f"APP_SECRET exists: {bool(app_secret)}")
+    logger.debug(f"REFRESH_TOKEN exists: {bool(refresh_token)}")
 
     missing_creds = []
     if not app_key:
@@ -161,7 +170,13 @@ def get_dropbox_access_token(account):
             }
         )
         response.raise_for_status()
-        return response.json().get("access_token")
+        token = response.json().get("access_token")
+        if token:
+            logger.info(f"Successfully obtained Dropbox token for {account}")
+            return token
+        else:
+            logger.error(f"No access token in response for {account}")
+            return None
     except requests.exceptions.RequestException as e:
         logger.error(f"Dropbox token refresh error for {account}: {str(e)}")
         return None
@@ -463,59 +478,110 @@ def handle_confirm_reset(update: Update, context: CallbackContext):
     )
 
 def handle_schedule(update: Update, context: CallbackContext):
-    weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    buttons = [[InlineKeyboardButton(day, callback_data=f"weekday:{day}")] for day in weekdays]
-    update.callback_query.message.reply_text("Select a weekday:", reply_markup=InlineKeyboardMarkup(buttons))
+    """Show schedule options."""
+    try:
+        weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        buttons = [[InlineKeyboardButton(day, callback_data=f"weekday:{day}")] for day in weekdays]
+        buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")])
+        reply_markup = InlineKeyboardMarkup(buttons)
+        
+        if update.callback_query:
+            update.callback_query.message.edit_text(
+                "Select a weekday to schedule posts:",
+                reply_markup=reply_markup
+            )
+        else:
+            update.message.reply_text(
+                "Select a weekday to schedule posts:",
+                reply_markup=reply_markup
+            )
+    except Exception as e:
+        logger.error(f"Error in handle_schedule: {str(e)}")
+        if update.callback_query:
+            update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
+        else:
+            update.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_weekday(update: Update, context: CallbackContext):
-    query = update.callback_query
-    weekday = query.data.split(":")[1]
-    context.user_data['weekday'] = weekday
-    context.user_data['next_action'] = 'post_count'
-    query.message.reply_text(f"How many posts to schedule for {weekday}?")
+    """Handle weekday selection for scheduling."""
+    try:
+        query = update.callback_query
+        weekday = query.data.split(":")[1]
+        context.user_data['weekday'] = weekday
+        context.user_data['next_action'] = 'post_count'
+        
+        # Add back button
+        buttons = [
+            [InlineKeyboardButton("🔙 Back to Schedule", callback_data="schedule")]
+        ]
+        reply_markup = InlineKeyboardMarkup(buttons)
+        
+        query.message.edit_text(
+            f"How many posts to schedule for {weekday}?",
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_weekday: {str(e)}")
+        query.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_time_selection(update: Update, context: CallbackContext):
-    query = update.callback_query
-    time = query.data.split(":")[1]
-    
-    if time == "done":
-        if not context.user_data.get('selected_times'):
-            query.message.reply_text("❌ Please select at least one time slot.")
+    """Handle time slot selection."""
+    try:
+        query = update.callback_query
+        time = query.data.split(":")[1]
+        
+        if time == "done":
+            if not context.user_data.get('selected_times'):
+                query.message.reply_text("❌ Please select at least one time slot.")
+                return
+                
+            account = context.user_data['account']
+            weekday = context.user_data['weekday']
+            cfg = load_json(CONFIG_PATH)
+            cfg.setdefault(account, {})[weekday] = sorted(context.user_data['selected_times'])
+            save_json(CONFIG_PATH, cfg)
+            
+            # Show success message with back button
+            buttons = [
+                [InlineKeyboardButton("🔙 Back to Schedule", callback_data="schedule")],
+                [InlineKeyboardButton("📋 View Schedule", callback_data="view_schedule")]
+            ]
+            reply_markup = InlineKeyboardMarkup(buttons)
+            
+            query.message.edit_text(
+                f"✅ Schedule saved for {weekday}:\n{', '.join(sorted(context.user_data['selected_times']))}",
+                reply_markup=reply_markup
+            )
+            context.user_data.clear()
             return
             
-        account = context.user_data['account']
-        weekday = context.user_data['weekday']
-        cfg = load_json(CONFIG_PATH)
-        cfg.setdefault(account, {})[weekday] = sorted(context.user_data['selected_times'])
-        save_json(CONFIG_PATH, cfg)
-        query.message.reply_text("✅ Schedule saved.")
-        context.user_data.clear()
-        return
+        elif time == "clear":
+            context.user_data['selected_times'] = []
+            query.message.edit_text(
+                "Select time slots (15-minute intervals):",
+                reply_markup=create_time_button_grid([], context.user_data['post_count'])
+            )
+            return
         
-    elif time == "clear":
-        context.user_data['selected_times'] = []
+        selected_times = context.user_data.get('selected_times', [])
+        max_slots = context.user_data['post_count']
+        
+        if time in selected_times:
+            selected_times.remove(time)
+        elif len(selected_times) < max_slots:
+            selected_times.append(time)
+        else:
+            query.answer("Maximum number of slots reached!")
+            return
+        
+        context.user_data['selected_times'] = selected_times
         query.message.edit_text(
-            "Select time slots (15-minute intervals):",
-            reply_markup=create_time_button_grid([], context.user_data['post_count'])
+            f"Select time slots ({len(selected_times)}/{max_slots} selected):",
+            reply_markup=create_time_button_grid(selected_times, max_slots)
         )
-        return
-    
-    selected_times = context.user_data.get('selected_times', [])
-    max_slots = context.user_data['post_count']
-    
-    if time in selected_times:
-        selected_times.remove(time)
-    elif len(selected_times) < max_slots:
-        selected_times.append(time)
-    else:
-        query.answer("Maximum number of slots reached!")
-        return
-    
-    context.user_data['selected_times'] = selected_times
-    query.message.edit_text(
-        f"Select time slots ({len(selected_times)}/{max_slots} selected):",
-        reply_markup=create_time_button_grid(selected_times, max_slots)
-    )
+    except Exception as e:
+        logger.error(f"Error in handle_time_selection: {str(e)}")
+        query.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_message(update: Update, context: CallbackContext):
     text = update.message.text
@@ -644,41 +710,56 @@ def handle_update_token(update: Update, context: CallbackContext):
         update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_token_choice(update: Update, context: CallbackContext):
-    token_type = update.callback_query.data.split(":")[1]
-    account = context.user_data.get('account')
-    
-    if token_type == "IG":
-        secret_name = f"IG_{account.upper()}_TOKEN"
-        token_type_display = "Instagram"
-    else:
-        secret_name = f"DROPBOX_{account.upper()}_TOKEN"
-        token_type_display = "Dropbox"
-    
-    context.user_data['secret_target'] = secret_name
-    context.user_data['token_type'] = token_type_display
-    context.user_data['next_action'] = 'update_token'
-    
-    buttons = [
-        [InlineKeyboardButton("✅ Continue", callback_data="token:continue")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="back_to_menu")]
-    ]
-    
-    update.callback_query.message.edit_text(
-        f"⚠️ You are about to update the {token_type_display} token for {account}.\n\n"
-        f"This will update the GitHub secret: {secret_name}\n\n"
-        "Do you want to continue?",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    """Handle token type selection."""
+    try:
+        token_type = update.callback_query.data.split(":")[1]
+        account = context.user_data.get('account')
+        
+        if token_type == "IG":
+            secret_name = f"IG_{account.upper()}_TOKEN"
+            token_type_display = "Instagram"
+        else:
+            secret_name = f"DROPBOX_{account.upper()}_TOKEN"
+            token_type_display = "Dropbox"
+        
+        context.user_data['secret_target'] = secret_name
+        context.user_data['token_type'] = token_type_display
+        context.user_data['next_action'] = 'update_token'
+        
+        buttons = [
+            [InlineKeyboardButton("✅ Continue", callback_data="token:continue")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
+        ]
+        
+        update.callback_query.message.edit_text(
+            f"⚠️ You are about to update the {token_type_display} token for {account}.\n\n"
+            f"This will update the GitHub secret: {secret_name}\n\n"
+            "Do you want to continue?",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_token_choice: {str(e)}")
+        update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_token_continue(update: Update, context: CallbackContext):
-    query = update.callback_query
-    secret_name = context.user_data.get('secret_target')
-    token_type = context.user_data.get('token_type')
-    
-    query.message.edit_text(
-        f"Please send the new {token_type} token value.\n\n"
-        f"⚠️ This will update: {secret_name}"
-    )
+    """Handle token update continuation."""
+    try:
+        query = update.callback_query
+        secret_name = context.user_data.get('secret_target')
+        token_type = context.user_data.get('token_type')
+        
+        buttons = [
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
+        ]
+        
+        query.message.edit_text(
+            f"Please send the new {token_type} token value.\n\n"
+            f"⚠️ This will update: {secret_name}",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_token_continue: {str(e)}")
+        query.message.reply_text("❌ An error occurred. Please try again.")
 
 def handle_pause(update: Update, context: CallbackContext):
     account = context.user_data['account']
@@ -772,6 +853,7 @@ def generate_time_slots():
     return slots
 
 def create_time_button_grid(selected_times, max_slots):
+    """Create time selection grid with back button."""
     time_slots = generate_time_slots()
     buttons = []
     row = []
@@ -794,6 +876,9 @@ def create_time_button_grid(selected_times, max_slots):
         control_row.append(InlineKeyboardButton("✅ Done", callback_data="time:done"))
         control_row.append(InlineKeyboardButton("❌ Clear", callback_data="time:clear"))
     buttons.append(control_row)
+    
+    # Add back button
+    buttons.append([InlineKeyboardButton("🔙 Back to Weekday", callback_data="schedule")])
     
     return InlineKeyboardMarkup(buttons)
 
@@ -912,16 +997,26 @@ def change_user_password(user_id, new_password):
 
 # ----------- MAIN ----------- #
 def main():
+    """Main function with environment variable validation."""
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         print("❌ TELEGRAM_BOT_TOKEN not set")
         return
 
     # Debug print for environment variables
-    print("TELEGRAM_BOT_PASSWORD env:", os.getenv("TELEGRAM_BOT_PASSWORD"))
-    print("DROPBOX_INKWISPS_APP_KEY env:", os.getenv("DROPBOX_INKWISPS_APP_KEY"))
-    print("DROPBOX_INKWISPS_APP_SECRET env:", os.getenv("DROPBOX_INKWISPS_APP_SECRET"))
-    print("DROPBOX_INKWISPS_REFRESH env:", os.getenv("DROPBOX_INKWISPS_REFRESH"))
+    print("Environment Variables Check:")
+    print("TELEGRAM_BOT_PASSWORD:", "Set" if os.getenv("TELEGRAM_BOT_PASSWORD") else "Not Set")
+    print("TELEGRAM_CHAT_ID:", "Set" if os.getenv("TELEGRAM_CHAT_ID") else "Not Set")
+    print("GH_PAT:", "Set" if os.getenv("GH_PAT") else "Not Set")
+    
+    # Check Dropbox credentials
+    accounts = ["inkwisps", "ink_wisps", "eclipsed_by_you"]
+    for account in accounts:
+        env_account = account.replace('-', '_').upper()
+        print(f"\nDropbox credentials for {account}:")
+        print(f"DROPBOX_{env_account}_APP_KEY:", "Set" if os.getenv(f"DROPBOX_{env_account}_APP_KEY") else "Not Set")
+        print(f"DROPBOX_{env_account}_APP_SECRET:", "Set" if os.getenv(f"DROPBOX_{env_account}_APP_SECRET") else "Not Set")
+        print(f"DROPBOX_{env_account}_REFRESH:", "Set" if os.getenv(f"DROPBOX_{env_account}_REFRESH") else "Not Set")
 
     # Ensure scheduler directory exists
     os.makedirs(SCHEDULER_DIR, exist_ok=True)
@@ -960,10 +1055,6 @@ def main():
     dp.add_handler(CallbackQueryHandler(handle_account_selection, pattern="^back_to_menu$"))
     
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
-    # Add user management handlers
-    dp.add_handler(CommandHandler("add_user", handle_add_user))
-    dp.add_handler(CommandHandler("change_password", handle_change_password))
 
     updater.start_polling()
     updater.idle()
