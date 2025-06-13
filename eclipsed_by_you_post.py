@@ -164,8 +164,11 @@ class DropboxToInstagramUploader:
         }
 
         if media_type == "REELS":
-            data["media_type"] = "REELS"
-            data["video_url"] = temp_link
+            data.update({
+                "media_type": "REELS",
+                "video_url": temp_link,
+                "share_to_feed": "false"  # Set during media creation
+            })
         else:
             data["image_url"] = temp_link
 
@@ -198,9 +201,6 @@ class DropboxToInstagramUploader:
             "creation_id": creation_id,
             "access_token": self.instagram_access_token
         }
-
-        if media_type == "REELS":
-            publish_data["share_to_feed"] = "false"  # Don't show in feed/grid
 
         pub = requests.post(publish_url, data=publish_data)
         if pub.status_code == 200:
