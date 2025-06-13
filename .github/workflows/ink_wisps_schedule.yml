@@ -2,7 +2,7 @@ name: Instagram Scheduler - INK_WISPS
 
 on:
   schedule:
-    - cron: "*/15 * * * *"  # Every 15 minutes
+    - cron: "*/45 * * * *"  # Every 15 minutes
   workflow_dispatch:
 
 jobs:
