@@ -2,7 +2,7 @@ name: Instagram Scheduler - ECLIPSED_BY_YOU
 
 on:
   schedule:
-    - cron: "*/20 * * * *"  # Every 20 minutes
+    - cron: "*/30 * * * *"  # Every 20 minutes
   workflow_dispatch:
 
 jobs:
