@@ -650,22 +650,21 @@ def handle_message(update: Update, context: CallbackContext):
                 update.message.reply_text("❌ Invalid token. Please send a valid token.")
                 return
                 
-            # Log the attempt
-            logger.info(f"Attempting to update {token_type} for {account}")
+            # Store the token temporarily
+            context.user_data['temp_token'] = text
             
-            success = update_github_secret(secret_name, text)
-            if success:
-                update.message.reply_text(
-                    f"✅ {token_type} updated successfully.\n"
-                    "Now enter expiry date (YYYY-MM-DD):"
-                )
-                context.user_data['next_action'] = 'token_expiry'
-            else:
-                update.message.reply_text(
-                    f"❌ Failed to update {token_type}.\n"
-                    "Please check the logs and try again."
-                )
-                context.user_data.clear()
+            # Ask for confirmation
+            buttons = [
+                [InlineKeyboardButton("✅ Yes, Update Token", callback_data="token:confirm")],
+                [InlineKeyboardButton("❌ No, Cancel", callback_data="update_token")]
+            ]
+            
+            update.message.reply_text(
+                f"⚠️ Are you sure you want to update the {token_type}?\n"
+                f"This will update: {secret_name}",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+            context.user_data['next_action'] = 'confirming_token'
 
         elif context.user_data.get('next_action') == 'token_expiry':
             try:
@@ -673,7 +672,7 @@ def handle_message(update: Update, context: CallbackContext):
                 if expiry_date < datetime.now():
                     update.message.reply_text("❌ Expiry date cannot be in the past. Try again:")
                     return
-                
+                    
                 update_token_expiry(account, text)
                 update.message.reply_text(
                     "✅ Token expiry date saved.\n"
@@ -711,6 +710,33 @@ def handle_message(update: Update, context: CallbackContext):
             else:
                 update.message.reply_text("❌ Failed to change password. Please try again.")
             context.user_data.clear()
+
+        elif context.user_data.get('next_action') == 'confirming_token':
+            secret_name = context.user_data.get('secret_target')
+            token_type = context.user_data.get('token_type')
+            temp_token = context.user_data.get('temp_token')
+            
+            if not temp_token:
+                update.message.reply_text("❌ Token data lost. Please try again.")
+                context.user_data.clear()
+                return
+            
+            # Log the attempt
+            logger.info(f"Attempting to update {token_type} for {context.user_data.get('account')}")
+            
+            success = update_github_secret(secret_name, temp_token)
+            if success:
+                update.message.reply_text(
+                    f"✅ {token_type} updated successfully.\n"
+                    "Now enter expiry date (YYYY-MM-DD):"
+                )
+                context.user_data['next_action'] = 'token_expiry'
+            else:
+                update.message.reply_text(
+                    f"❌ Failed to update {token_type}.\n"
+                    "Please check the logs and try again."
+                )
+                context.user_data.clear()
 
     except Exception as e:
         logger.error(f"Error in handle_message: {str(e)}")
@@ -759,19 +785,23 @@ def handle_token_choice(update: Update, context: CallbackContext):
         token_mapping = {
             "IG": {
                 "secret": f"IG_{account.upper()}_TOKEN",
-                "display": "Instagram"
+                "display": "Instagram",
+                "prompt": "Please send your Instagram token:"
             },
             "DB_APP_KEY": {
                 "secret": f"DROPBOX_{account.upper()}_APP_KEY",
-                "display": "Dropbox App Key"
+                "display": "Dropbox App Key",
+                "prompt": "Please send your Dropbox App Key:"
             },
             "DB_APP_SECRET": {
                 "secret": f"DROPBOX_{account.upper()}_APP_SECRET",
-                "display": "Dropbox App Secret"
+                "display": "Dropbox App Secret",
+                "prompt": "Please send your Dropbox App Secret:"
             },
             "DB_REFRESH": {
                 "secret": f"DROPBOX_{account.upper()}_REFRESH",
-                "display": "Dropbox Refresh Token"
+                "display": "Dropbox Refresh Token",
+                "prompt": "Please send your Dropbox Refresh Token:"
             }
         }
         
@@ -783,42 +813,54 @@ def handle_token_choice(update: Update, context: CallbackContext):
         token_info = token_mapping[token_type]
         context.user_data['secret_target'] = token_info["secret"]
         context.user_data['token_type'] = token_info["display"]
-        context.user_data['next_action'] = 'update_token'
+        context.user_data['next_action'] = 'awaiting_token'
         
         buttons = [
-            [InlineKeyboardButton("✅ Continue", callback_data="token:continue")],
             [InlineKeyboardButton("🔙 Back", callback_data="update_token")]
         ]
         
         query.message.edit_text(
-            f"⚠️ You are about to update the {token_info['display']} for {account}.\n\n"
-            f"This will update the GitHub secret: {token_info['secret']}\n\n"
-            "Do you want to continue?",
+            f"{token_info['prompt']}\n\n"
+            f"⚠️ This will update: {token_info['secret']}",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
     except Exception as e:
         logger.error(f"Error in handle_token_choice: {str(e)}")
         query.message.reply_text("❌ An error occurred. Please try again.")
 
-def handle_token_continue(update: Update, context: CallbackContext):
-    """Handle token update continuation."""
+def handle_token_confirm(update: Update, context: CallbackContext):
+    """Handle token update confirmation."""
     try:
         query = update.callback_query
         secret_name = context.user_data.get('secret_target')
         token_type = context.user_data.get('token_type')
+        temp_token = context.user_data.get('temp_token')
         
-        buttons = [
-            [InlineKeyboardButton("🔙 Back", callback_data="update_token")]
-        ]
+        if not temp_token:
+            query.message.edit_text("❌ Token data lost. Please try again.")
+            context.user_data.clear()
+            return
+            
+        # Log the attempt
+        logger.info(f"Attempting to update {token_type} for {context.user_data.get('account')}")
         
-        query.message.edit_text(
-            f"Please send the new {token_type} value.\n\n"
-            f"⚠️ This will update: {secret_name}",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        success = update_github_secret(secret_name, temp_token)
+        if success:
+            query.message.edit_text(
+                f"✅ {token_type} updated successfully.\n"
+                "Now enter expiry date (YYYY-MM-DD):"
+            )
+            context.user_data['next_action'] = 'token_expiry'
+        else:
+            query.message.edit_text(
+                f"❌ Failed to update {token_type}.\n"
+                "Please check the logs and try again."
+            )
+            context.user_data.clear()
+            
     except Exception as e:
-        logger.error(f"Error in handle_token_continue: {str(e)}")
-        query.message.reply_text("❌ An error occurred. Please try again.")
+        logger.error(f"Error in handle_token_confirm: {str(e)}")
+        query.message.edit_text("❌ An error occurred. Please try again.")
 
 def handle_pause(update: Update, context: CallbackContext):
     account = context.user_data['account']
@@ -1150,7 +1192,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(handle_status, pattern="^status$"))
     dp.add_handler(CallbackQueryHandler(handle_reset, pattern="^reset$"))
     dp.add_handler(CallbackQueryHandler(handle_token_choice, pattern="^token:"))
-    dp.add_handler(CallbackQueryHandler(handle_token_continue, pattern="^token:continue$"))
+    dp.add_handler(CallbackQueryHandler(handle_token_confirm, pattern="^token:confirm$"))
     dp.add_handler(CallbackQueryHandler(handle_message, pattern="^message:"))
     
     # Navigation handlers
