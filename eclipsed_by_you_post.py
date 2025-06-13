@@ -1,10 +1,10 @@
 # enhanced_eclipsed_by_you_post.py
 
 import os
-import time
-import json
+import ti
+import js
 import logging
-import requests
+import requ
 import dropbox
 from telegram import Bot
 from datetime import datetime, timedelta
